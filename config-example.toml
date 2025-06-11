@@ -1,0 +1,20 @@
+[grpc]
+connect_timeout = "30s"
+request_timeout = "30s"
+max_message_size = 1048576  # 1MB - slot updates are ~32 bytes
+use_tls = true
+
+# HTTP2 flow control
+http2_adaptive_window = false          # Small messages don't benefit
+http2_keep_alive_interval = "30s"      # Detect dead connections
+initial_connection_window_size = 65535 # 64KB - HTTP2 spec default
+initial_stream_window_size = 65535     # 64KB - HTTP2 spec default
+
+# TCP tuning
+tcp_nodelay = true     # Send pings immediately
+tcp_keepalive = "60s"  # OS-level dead connection detection
+buffer_size = 64       # Small buffer - we consume fast
+
+[benchmark]
+buffer_percentage = 0.1
+latency_samples = 20
