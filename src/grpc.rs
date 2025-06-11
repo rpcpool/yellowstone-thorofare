@@ -1,8 +1,12 @@
 use {
-    crate::types::{SlotStatus, SlotUpdate},
+    crate::{
+        EndpointData,
+        types::{SlotStatus, SlotUpdate},
+    },
     futures::StreamExt,
     std::time::{Duration, Instant, SystemTime},
     tokio::sync::mpsc,
+    tracing::error,
     yellowstone_grpc_client::{GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::{
         geyser::{
@@ -170,5 +174,65 @@ impl GrpcClient {
             .connect()
             .await
             .map_err(|e| GrpcError::ConnectionFailed(e.to_string()))
+    }
+}
+
+pub struct SlotCollector {
+    client: GrpcClient,
+    endpoint_data: EndpointData,
+    target_slots: usize,
+    buffer_percent: f32,
+}
+
+impl SlotCollector {
+    pub fn new(config: GrpcConfig, target_slots: usize, buffer_percent: f32) -> Result<Self> {
+        let endpoint = config.endpoint.clone();
+        Ok(Self {
+            client: GrpcClient::new(config)?,
+            endpoint_data: EndpointData::new(endpoint, target_slots, buffer_percent),
+            target_slots,
+            buffer_percent,
+        })
+    }
+
+    pub async fn collect(mut self) -> Result<EndpointData> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let endpoint = self.endpoint_data.endpoint.clone();
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = self.client.subscribe_slots(tx).await {
+                error!("{} subscription failed: {}", endpoint, e);
+            }
+        });
+
+        // (i.e 1000 slots + 10% buffer = 1100 slots)
+        let target_with_buffer = (self.target_slots as f32 * (1.0 + self.buffer_percent)) as usize;
+        let mut last_slot = None;
+        let mut different_seen_slots = 0;
+
+        while let Some(update) = rx.recv().await {
+            // New unique slot?
+            if last_slot != Some(update.slot) {
+                last_slot = Some(update.slot);
+                different_seen_slots += 1;
+            }
+
+            self.endpoint_data.updates.push(update);
+
+            if different_seen_slots >= target_with_buffer {
+                break;
+            }
+        }
+
+        handle.abort();
+        tracing::info!(
+            "{}: {} updates, {} slots",
+            self.endpoint_data.endpoint,
+            self.endpoint_data.updates.len(),
+            different_seen_slots
+        );
+
+        Ok(self.endpoint_data)
     }
 }
