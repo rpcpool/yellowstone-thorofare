@@ -2,11 +2,15 @@
 name = "yellowstone-grpc-bench"
 version = "0.1.0"
 authors = ["Triton One"]
-edition = "2021"
+edition = "2024"
 description = "Benchmarking tool for comparing Solana node performance via Yellowstone gRPC"
 license = "Apache-2.0"
 resolver = "2"
 publish = false
+
+[[bin]]
+name = "test-grpc"
+path = "src/bin/test_grpc.rs"
 
 [dependencies]
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros", "sync"] }
@@ -17,6 +21,16 @@ serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
 humantime-serde = "1.1.1"
 toml = "0.8.23"
+clap = { version = "4.5.40", features = ["derive"] }
+# Using `anyhow` for error handling in tests only
+anyhow = "1.0.98"
+tracing = { version = "0.1.41", features = ["log"] }
+tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
+
+[lints.clippy]
+clone_on_ref_ptr = "deny"
+missing_const_for_fn = "deny"
+trivially_copy_pass_by_ref = "deny"
 
 [patch.crates-io]
 yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc.git", tag = "v7.0.0+solana.2.2.15" }

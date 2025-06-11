@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use {
+    serde::{Deserialize, Serialize},
+    std::time::SystemTime,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlotUpdate {

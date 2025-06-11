@@ -1,3 +1,8 @@
+mod config;
 mod grpc;
 mod types;
-mod config;
+
+pub use {
+    grpc::{GrpcClient, GrpcConfig},
+    types::SlotStatus,
+};
