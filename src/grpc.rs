@@ -93,8 +93,8 @@ impl GrpcClient {
                 let update = SlotUpdate {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
+                    instant: Instant::now(),
                     timestamp: SystemTime::now(),
-                    parent: slot.parent,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;

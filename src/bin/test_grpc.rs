@@ -96,7 +96,8 @@ async fn main() -> Result<()> {
                 info!(
                     slot = update.slot,
                     status = ?update.status,
-                    parent = ?update.parent,
+                    instant = ?update.instant,
+                    timestamp = ?update.timestamp,
                     "Slot update #{}", count
                 );
 
