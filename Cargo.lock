@@ -5592,6 +5592,7 @@ dependencies = [
  "futures",
  "humantime-serde",
  "serde",
+ "serde_json",
  "thiserror 2.0.12",
  "tokio",
  "toml 0.8.23",

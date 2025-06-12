@@ -10,7 +10,7 @@ pub struct SlotUpdate {
     pub slot: u64,
     pub status: SlotStatus,
     pub instant: Instant,      // For delta calculations
-    pub timestamp: SystemTime, // For client visualization
+    pub system_time: SystemTime, // For client visualization
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

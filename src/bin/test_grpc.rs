@@ -40,6 +40,9 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .init();
 
+    // TODO: This will not work because https also starts with http
+    // We should put tls default as false and if the person wants to test with tls on they should specify
+    // in an argument --tls
     let localhost = args.endpoint.starts_with("http");
 
     let config = GrpcConfig {
@@ -97,7 +100,7 @@ async fn main() -> Result<()> {
                     slot = update.slot,
                     status = ?update.status,
                     instant = ?update.instant,
-                    timestamp = ?update.timestamp,
+                    system_time = ?update.system_time,
                     "Slot update #{}", count
                 );
 

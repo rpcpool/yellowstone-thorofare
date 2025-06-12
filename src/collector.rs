@@ -1,12 +1,17 @@
 use {
     crate::{
-        Config, GrpcConfig,
-        grpc::{GrpcError, SlotCollector},
-        types::EndpointData,
+        grpc::{GrpcError, SlotCollector}, types::EndpointData, Config, GrpcConfig
     },
-    std::sync::Arc,
-    tokio::sync::Barrier,
+    std::{sync::Arc, time::Duration},
+    tokio::sync::Barrier, tracing::info,
 };
+
+pub type RunCollectorResult = Result<(
+    EndpointData, // data for endpoint1
+    EndpointData, // data for endpoint2
+    Duration, // avg ping for endpoint1
+    Duration, // avg ping for endpoint2
+), GrpcError>;
 
 pub struct Collector {
     config: Config,
@@ -35,29 +40,34 @@ impl Collector {
             slot_count,
         }
     }
-
-    pub async fn run(self) -> Result<(EndpointData, EndpointData), GrpcError> {
+    pub async fn run(self) -> RunCollectorResult {
         let barrier = Arc::new(Barrier::new(2));
-        let buffer = self.config.benchmark.buffer_percentage;
 
+       info!("Collecting ping averages...");
         let collector1 = SlotCollector::new(
             self.make_grpc_config(self.endpoint1.clone(), self.x_token1.clone()),
             self.slot_count,
-            buffer,
-        )?;
-
+            self.config.benchmark.buffer_percentage,
+            self.config.benchmark.latency_samples,
+        ).await?;
         let collector2 = SlotCollector::new(
             self.make_grpc_config(self.endpoint2.clone(), self.x_token2.clone()),
             self.slot_count,
-            buffer,
-        )?;
+            self.config.benchmark.buffer_percentage,
+            self.config.benchmark.latency_samples,
+        ).await?;
+        
 
+        let ping1 = collector1.avg_ping;
+        let ping2 = collector2.avg_ping;
+        
+        
         let (data1, data2) = tokio::join!(
             Self::collect_with_barrier(collector1, Arc::clone(&barrier)),
             Self::collect_with_barrier(collector2, barrier)
         );
-
-        Ok((data1?, data2?))
+        
+        Ok((data1?, data2?, ping1, ping2))
     }
 
     async fn collect_with_barrier(

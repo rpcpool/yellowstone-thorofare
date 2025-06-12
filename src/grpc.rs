@@ -98,7 +98,7 @@ impl GrpcClient {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
                     instant: Instant::now(),
-                    timestamp: SystemTime::now(),
+                    system_time: SystemTime::now(),
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -182,16 +182,26 @@ pub struct SlotCollector {
     endpoint_data: EndpointData,
     target_slots: usize,
     buffer_percent: f32,
+    pub avg_ping: Duration,
 }
 
 impl SlotCollector {
-    pub fn new(config: GrpcConfig, target_slots: usize, buffer_percent: f32) -> Result<Self> {
+    pub async fn new(config: GrpcConfig, target_slots: usize, buffer_percent: f32, latency_samples: usize) -> Result<Self> {
         let endpoint = config.endpoint.clone();
+        let client = GrpcClient::new(config)?;
+
+        // Measure ping upfront
+        let latencies = client.measure_latency(latency_samples).await?;
+        let avg_ping = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+        
+        tracing::info!("{}: avg ping {:.2}ms", endpoint, avg_ping.as_secs_f64() * 1000.0);
+
         Ok(Self {
-            client: GrpcClient::new(config)?,
+            client,
             endpoint_data: EndpointData::new(endpoint, target_slots, buffer_percent),
             target_slots,
             buffer_percent,
+            avg_ping,
         })
     }
 
@@ -211,6 +221,8 @@ impl SlotCollector {
         let mut last_slot = None;
         let mut different_seen_slots = 0;
 
+        // TODO: there's an error here;
+        // we should find another way of saving the slots we've seen
         while let Some(update) = rx.recv().await {
             // New unique slot?
             if last_slot != Some(update.slot) {

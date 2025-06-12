@@ -12,12 +12,17 @@ publish = false
 name = "test-grpc"
 path = "src/bin/test_grpc.rs"
 
+[[bin]]
+name = "grpc-bench"
+path = "src/bin/grpc_bench.rs"
+
 [dependencies]
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros", "sync"] }
 yellowstone-grpc-client = "6.1.0"
 yellowstone-grpc-proto = "6.1.0"
 futures = "0.3.31"
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 thiserror = "2.0.12"
 humantime-serde = "1.1.1"
 toml = "0.8.23"
