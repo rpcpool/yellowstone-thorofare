@@ -20,6 +20,9 @@ struct Args {
 
     #[clap(long, default_value = "info")]
     log_level: String,
+
+    #[clap(long, default_value = "false")]
+    tls: bool,
 }
 
 #[tokio::main]
@@ -40,18 +43,13 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .init();
 
-    // TODO: This will not work because https also starts with http
-    // We should put tls default as false and if the person wants to test with tls on they should specify
-    // in an argument --tls
-    let localhost = args.endpoint.starts_with("http");
-
     let config = GrpcConfig {
         endpoint: args.endpoint.clone(),
         x_token: args.x_token,
         connect_timeout: Duration::from_secs(10),
         request_timeout: Duration::from_secs(10),
         max_message_size: 1024 * 1024,
-        use_tls: !localhost,
+        use_tls: args.tls,
         http2_adaptive_window: false,
         http2_keep_alive_interval: None,
         initial_connection_window_size: None,

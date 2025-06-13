@@ -4,9 +4,12 @@ use {
         types::{SlotStatus, SlotUpdate},
     },
     futures::StreamExt,
-    std::time::{Duration, Instant, SystemTime},
+    std::{
+        collections::HashSet,
+        time::{Duration, Instant, SystemTime},
+    },
     tokio::sync::mpsc,
-    tracing::error,
+    tracing::{error, info},
     yellowstone_grpc_client::{GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::{
         geyser::{
@@ -186,15 +189,24 @@ pub struct SlotCollector {
 }
 
 impl SlotCollector {
-    pub async fn new(config: GrpcConfig, target_slots: usize, buffer_percent: f32, latency_samples: usize) -> Result<Self> {
+    pub async fn new(
+        config: GrpcConfig,
+        target_slots: usize,
+        buffer_percent: f32,
+        latency_samples: usize,
+    ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
         let client = GrpcClient::new(config)?;
 
         // Measure ping upfront
         let latencies = client.measure_latency(latency_samples).await?;
         let avg_ping = latencies.iter().sum::<Duration>() / latencies.len() as u32;
-        
-        tracing::info!("{}: avg ping {:.2}ms", endpoint, avg_ping.as_secs_f64() * 1000.0);
+
+        tracing::info!(
+            "{}: avg ping {:.2}ms",
+            endpoint,
+            avg_ping.as_secs_f64() * 1000.0
+        );
 
         Ok(Self {
             client,
@@ -216,33 +228,43 @@ impl SlotCollector {
             }
         });
 
-        // (i.e 1000 slots + 10% buffer = 1100 slots)
-        let target_with_buffer = (self.target_slots as f32 * (1.0 + self.buffer_percent)) as usize;
-        let mut last_slot = None;
-        let mut different_seen_slots = 0;
+        let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
 
-        // TODO: there's an error here;
-        // we should find another way of saving the slots we've seen
+        // Pre-allocate HashSet with expected capacity
+        let pre_allocate_capacity =
+            EndpointData::calculate_capacity(self.target_slots, self.buffer_percent);
+        let mut seen_slots = HashSet::with_capacity(pre_allocate_capacity);
+
+        let mut last_logged_percent = 0;
         while let Some(update) = rx.recv().await {
-            // New unique slot?
-            if last_slot != Some(update.slot) {
-                last_slot = Some(update.slot);
-                different_seen_slots += 1;
-            }
+            // Track unique slots
+            seen_slots.insert(update.slot);
 
             self.endpoint_data.updates.push(update);
 
-            if different_seen_slots >= target_with_buffer {
+            let percent = (seen_slots.len() as f32 / slots_and_buffer * 100.0).floor() as u32;
+            if percent >= last_logged_percent + 10 {
+                info!(
+                    "{}: {:.0}% of slots seen ({} unique slots)",
+                    self.endpoint_data.endpoint,
+                    percent,
+                    seen_slots.len()
+                );
+                last_logged_percent = percent;
+            }
+
+            // Check if we've collected enough unique slots
+            if seen_slots.len() >= slots_and_buffer as usize {
                 break;
             }
         }
 
         handle.abort();
-        tracing::info!(
-            "{}: {} updates, {} slots",
+        info!(
+            "{}: {} updates, {} unique slots",
             self.endpoint_data.endpoint,
             self.endpoint_data.updates.len(),
-            different_seen_slots
+            seen_slots.len()
         );
 
         Ok(self.endpoint_data)

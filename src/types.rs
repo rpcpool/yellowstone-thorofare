@@ -3,13 +3,11 @@ use {
     std::time::{Instant, SystemTime},
 };
 
-const FINALIZATION_BUFFER_SIZE: usize = 5;
-
 #[derive(Debug, Clone)]
 pub struct SlotUpdate {
     pub slot: u64,
     pub status: SlotStatus,
-    pub instant: Instant,      // For delta calculations
+    pub instant: Instant,        // For delta calculations
     pub system_time: SystemTime, // For client visualization
 }
 
@@ -47,15 +45,16 @@ pub struct EndpointData {
 
 impl EndpointData {
     pub fn new(endpoint: String, slot_count: usize, buffer_percent: f32) -> Self {
-        // 6 statuses possible (excluding dead) per slot
-        let capacity = ((slot_count as f32 * (1.0 + buffer_percent)) as usize) * 6;
-
-        // Add ~30 slots worth for finalization lag
-        let finalization_buffer = 30 * FINALIZATION_BUFFER_SIZE;
+        let capacity = Self::calculate_capacity(slot_count, buffer_percent);
 
         Self {
-            updates: Vec::with_capacity(capacity + finalization_buffer),
+            updates: Vec::with_capacity(capacity),
             endpoint,
         }
+    }
+
+    pub fn calculate_capacity(slot_count: usize, buffer_percent: f32) -> usize {
+        // 6 statuses possible (excluding dead) per slot
+        ((slot_count as f32 * (1.0 + buffer_percent)) as usize) * 6
     }
 }

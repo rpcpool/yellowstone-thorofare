@@ -1,13 +1,13 @@
 mod collector;
 mod config;
 mod grpc;
-mod types;
 mod processor;
+mod types;
 
 pub use {
+    collector::Collector,
     config::Config,
     grpc::{GrpcClient, GrpcConfig},
-    types::{EndpointData, SlotStatus},
-    collector::Collector,
     processor::Processor,
+    types::{EndpointData, SlotStatus},
 };

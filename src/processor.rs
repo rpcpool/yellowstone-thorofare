@@ -1,8 +1,11 @@
-use crate::types::{EndpointData, SlotStatus, SlotUpdate};
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::info;
+use {
+    crate::types::{EndpointData, SlotStatus, SlotUpdate},
+    serde::Serialize,
+    std::{
+        collections::{HashMap, HashSet},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    },
+};
 
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
@@ -15,12 +18,12 @@ pub struct BenchmarkResult {
 
 #[derive(Debug, Serialize)]
 pub struct Metadata {
-    pub total_slots_collected: u64,    // Sum of slots from both endpoints
-    pub common_slots: u64,             // Slots seen by both endpoints
-    pub compared_slots: u64,           // Slots actually compared (with all statuses)
-    pub dropped_slots: u64,            // Slots missing statuses or marked dead
+    pub total_slots_collected: u64, // Sum of slots from both endpoints
+    pub common_slots: u64,          // Slots seen by both endpoints
+    pub compared_slots: u64,        // Slots actually compared (with all statuses)
+    pub dropped_slots: u64,         // Slots missing statuses or marked dead
     pub duration_ms: u64,
-    pub benchmark_start_time: u64,     // Unix timestamp ms
+    pub benchmark_start_time: u64, // Unix timestamp ms
 }
 
 #[derive(Debug, Serialize)]
@@ -33,7 +36,7 @@ pub struct EndpointInfo {
 
 #[derive(Debug, Serialize)]
 pub struct EndpointSummary {
-    pub waiting_time: Percentiles, 
+    pub waiting_time: Percentiles,
     pub download_time: Percentiles,
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
@@ -56,7 +59,7 @@ pub struct SlotComparison {
 
 #[derive(Debug, Serialize)]
 pub struct SlotDetail {
-    pub waiting_time_ms: Option<f64>,  // Time waited for the fastest endpoint
+    pub waiting_time_ms: Option<f64>, // Time waited for the fastest endpoint
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
 }
@@ -91,22 +94,23 @@ impl Processor {
         let benchmark_start = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64 - duration_ms;
-        
+            .as_millis() as u64
+            - duration_ms;
+
         // Get unique slots from each endpoint
         let endpoint1_updates = data1.updates.len() as u64;
         let endpoint2_updates = data2.updates.len() as u64;
-        
+
         // Build lookup maps
         let map1 = Self::build_map(data1.updates);
         let map2 = Self::build_map(data2.updates);
-        
+
         // Count unique slots per endpoint
         let endpoint1_slots: HashSet<u64> = map1.keys().map(|(slot, _)| *slot).collect();
         let endpoint2_slots: HashSet<u64> = map2.keys().map(|(slot, _)| *slot).collect();
-        
+
         let total_slots_collected = endpoint1_slots.len() as u64 + endpoint2_slots.len() as u64;
-        
+
         // Find slots that exist in both endpoints
         let common_slots: Vec<u64> = endpoint1_slots
             .intersection(&endpoint2_slots)
@@ -116,16 +120,12 @@ impl Processor {
             .collect::<HashSet<_>>() // dedup
             .into_iter()
             .collect::<Vec<_>>();
-        
+
         let mut sorted_common_slots = common_slots;
         sorted_common_slots.sort_unstable();
-        
+
         let common_slots_count = sorted_common_slots.len() as u64;
-        
-        info!("Endpoint 1: {} unique slots", endpoint1_slots.len());
-        info!("Endpoint 2: {} unique slots", endpoint2_slots.len());
-        info!("Common slots: {}", common_slots_count);
-        
+
         // Required statuses for a complete slot
         let required_statuses = [
             SlotStatus::FirstShredReceived,
@@ -135,46 +135,49 @@ impl Processor {
             SlotStatus::Confirmed,
             SlotStatus::Finalized,
         ];
-        
+
         // Process slots
         let mut slot_comparisons = Vec::new();
         let mut compared_slots = 0u64;
         let mut dropped_slots = 0u64;
-        
+
         let mut endpoint1_waiting_times = Vec::new();
         let mut endpoint1_download_times = Vec::new();
         let mut endpoint1_replay_times = Vec::new();
         let mut endpoint1_confirmation_times = Vec::new();
         let mut endpoint1_finalization_times = Vec::new();
-        
+
         let mut endpoint2_waiting_times = Vec::new();
         let mut endpoint2_download_times = Vec::new();
         let mut endpoint2_replay_times = Vec::new();
         let mut endpoint2_confirmation_times = Vec::new();
         let mut endpoint2_finalization_times = Vec::new();
-        
+
         for slot in sorted_common_slots {
             // Check if slot is dead in either endpoint
-            if map1.contains_key(&(slot, SlotStatus::Dead)) || 
-               map2.contains_key(&(slot, SlotStatus::Dead)) {
+            if map1.contains_key(&(slot, SlotStatus::Dead))
+                || map2.contains_key(&(slot, SlotStatus::Dead))
+            {
                 dropped_slots += 1;
                 continue;
             }
-            
+
             // Check if both endpoints have all required statuses
-            let ep1_complete = required_statuses.iter()
+            let ep1_complete = required_statuses
+                .iter()
                 .all(|status| map1.contains_key(&(slot, *status)));
-            let ep2_complete = required_statuses.iter()
+            let ep2_complete = required_statuses
+                .iter()
                 .all(|status| map2.contains_key(&(slot, *status)));
-            
+
             if !ep1_complete || !ep2_complete {
                 dropped_slots += 1;
                 continue;
             }
-            
+
             // Calculate waiting times
             let (ep1_wait, ep2_wait) = Self::calc_waiting_times(&map1, &map2, slot);
-            
+
             // Collect waiting times
             if let Some(wait) = ep1_wait {
                 endpoint1_waiting_times.push(wait);
@@ -182,47 +185,45 @@ impl Processor {
             if let Some(wait) = ep2_wait {
                 endpoint2_waiting_times.push(wait);
             }
-            
+
             // Build endpoint-specific data
             let mut endpoint1_detail = Self::build_slot_detail(&map1, slot);
             let mut endpoint2_detail = Self::build_slot_detail(&map2, slot);
-            
+
             // Add waiting times to slot details
             endpoint1_detail.waiting_time_ms = ep1_wait.map(|d| d.as_secs_f64() * 1000.0);
             endpoint2_detail.waiting_time_ms = ep2_wait.map(|d| d.as_secs_f64() * 1000.0);
-            
+
             // Collect metrics (we know these exist due to the check above)
             let d1 = Self::calc_download(&map1, slot).unwrap();
             let d2 = Self::calc_download(&map2, slot).unwrap();
             endpoint1_download_times.push(d1);
             endpoint2_download_times.push(d2);
-            
+
             let r1 = Self::calc_replay(&map1, slot).unwrap();
             let r2 = Self::calc_replay(&map2, slot).unwrap();
             endpoint1_replay_times.push(r1);
             endpoint2_replay_times.push(r2);
-            
+
             let c1 = Self::calc_confirmation(&map1, slot).unwrap();
             let c2 = Self::calc_confirmation(&map2, slot).unwrap();
             endpoint1_confirmation_times.push(c1);
             endpoint2_confirmation_times.push(c2);
-            
+
             let f1 = Self::calc_finalization(&map1, slot).unwrap();
             let f2 = Self::calc_finalization(&map2, slot).unwrap();
             endpoint1_finalization_times.push(f1);
             endpoint2_finalization_times.push(f2);
-            
+
             slot_comparisons.push(SlotComparison {
                 slot,
                 endpoint1: endpoint1_detail,
                 endpoint2: endpoint2_detail,
             });
-            
+
             compared_slots += 1;
         }
-        
-        info!("Compared {} slots, dropped {} slots", compared_slots, dropped_slots);
-        
+
         BenchmarkResult {
             metadata: Metadata {
                 total_slots_collected,
@@ -263,14 +264,14 @@ impl Processor {
             slots: slot_comparisons,
         }
     }
-    
+
     fn calc_waiting_times(
-        map1: &HashMap<SlotKey, SlotUpdate>, 
-        map2: &HashMap<SlotKey, SlotUpdate>, 
-        slot: u64
+        map1: &HashMap<SlotKey, SlotUpdate>,
+        map2: &HashMap<SlotKey, SlotUpdate>,
+        slot: u64,
     ) -> (Option<Duration>, Option<Duration>) {
         let key = (slot, SlotStatus::FirstShredReceived);
-        
+
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
@@ -289,7 +290,7 @@ impl Processor {
             _ => (None, None),
         }
     }
-    
+
     fn build_slot_detail(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> SlotDetail {
         let statuses = [
             SlotStatus::FirstShredReceived,
@@ -299,7 +300,7 @@ impl Processor {
             SlotStatus::Confirmed,
             SlotStatus::Finalized,
         ];
-        
+
         // Collect transitions
         let mut transitions = Vec::new();
         for status in &statuses {
@@ -310,7 +311,7 @@ impl Processor {
                 });
             }
         }
-        
+
         // Calculate durations - unwrap is safe here because we checked all statuses exist
         let durations = StageDurations {
             download_ms: Self::calc_download(map, slot).unwrap().as_secs_f64() * 1000.0,
@@ -318,58 +319,61 @@ impl Processor {
             confirmation_ms: Self::calc_confirmation(map, slot).unwrap().as_secs_f64() * 1000.0,
             finalization_ms: Self::calc_finalization(map, slot).unwrap().as_secs_f64() * 1000.0,
         };
-        
+
         SlotDetail {
             waiting_time_ms: None, // Will be filled by caller
             transitions,
             durations,
         }
     }
-    
+
     fn calc_download(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> Option<Duration> {
         let first = map.get(&(slot, SlotStatus::FirstShredReceived))?;
         let completed = map.get(&(slot, SlotStatus::Completed))?;
         Some(completed.instant.duration_since(first.instant))
     }
-    
+
     fn calc_replay(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> Option<Duration> {
         let bank = map.get(&(slot, SlotStatus::CreatedBank))?;
         let processed = map.get(&(slot, SlotStatus::Processed))?;
         Some(processed.instant.duration_since(bank.instant))
     }
-    
+
     fn calc_confirmation(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> Option<Duration> {
         let processed = map.get(&(slot, SlotStatus::Processed))?;
         let confirmed = map.get(&(slot, SlotStatus::Confirmed))?;
         Some(confirmed.instant.duration_since(processed.instant))
     }
-    
+
     fn calc_finalization(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> Option<Duration> {
         let confirmed = map.get(&(slot, SlotStatus::Confirmed))?;
         let finalized = map.get(&(slot, SlotStatus::Finalized))?;
         Some(finalized.instant.duration_since(confirmed.instant))
     }
-    
+
     fn build_map(updates: Vec<SlotUpdate>) -> HashMap<SlotKey, SlotUpdate> {
-        updates.into_iter()
+        updates
+            .into_iter()
             .map(|u| ((u.slot, u.status), u))
             .collect()
     }
-    
+
     fn to_timestamp_ms(time: SystemTime) -> u64 {
-        time.duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
+        time.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
     }
-    
+
     fn percentiles(mut values: Vec<Duration>) -> Percentiles {
         if values.is_empty() {
-            return Percentiles { p50: 0.0, p90: 0.0, p99: 0.0 };
+            return Percentiles {
+                p50: 0.0,
+                p90: 0.0,
+                p99: 0.0,
+            };
         }
-        
+
         values.sort_unstable();
         let len = values.len();
-        
+
         Percentiles {
             p50: values[len.saturating_sub(1).min(len * 50 / 100)].as_secs_f64() * 1000.0,
             p90: values[len.saturating_sub(1).min(len * 90 / 100)].as_secs_f64() * 1000.0,
