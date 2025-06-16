@@ -26,6 +26,7 @@ pub struct Collector {
     x_token1: Option<String>,
     x_token2: Option<String>,
     slot_count: usize,
+    with_load: bool,
 }
 
 impl Collector {
@@ -36,6 +37,7 @@ impl Collector {
         x_token1: Option<String>,
         x_token2: Option<String>,
         slot_count: usize,
+        with_load: bool,
     ) -> Self {
         Self {
             config,
@@ -44,6 +46,7 @@ impl Collector {
             x_token1,
             x_token2,
             slot_count,
+            with_load,
         }
     }
     pub async fn run(self) -> RunCollectorResult {
@@ -55,6 +58,7 @@ impl Collector {
             self.slot_count,
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
+            self.with_load,
         )
         .await?;
         let collector2 = SlotCollector::new(
@@ -62,6 +66,7 @@ impl Collector {
             self.slot_count,
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
+            self.with_load,
         )
         .await?;
 

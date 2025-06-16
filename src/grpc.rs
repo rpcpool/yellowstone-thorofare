@@ -7,13 +7,14 @@ use {
     std::{
         collections::HashSet,
         time::{Duration, Instant, SystemTime},
+        vec,
     },
     tokio::sync::mpsc,
     tracing::{error, info},
     yellowstone_grpc_client::{GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::{
         geyser::{
-            CommitmentLevel, SubscribeRequest, SubscribeRequestFilterSlots,
+            SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots,
             subscribe_update::UpdateOneof,
         },
         tonic::transport::ClientTlsConfig,
@@ -59,21 +60,22 @@ pub struct GrpcConfig {
 
 pub struct GrpcClient {
     config: GrpcConfig,
+    with_load: bool,
 }
 
 impl GrpcClient {
-    pub fn new(config: GrpcConfig) -> Result<Self> {
+    pub fn new(config: GrpcConfig, with_load: bool) -> Result<Self> {
         if config.endpoint.is_empty() {
             return Err(GrpcError::InvalidConfig("Empty endpoint".into()));
         }
 
-        Ok(Self { config })
+        Ok(Self { config, with_load })
     }
 
     pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
         let mut client = self.connect().await?;
 
-        let request = SubscribeRequest {
+        let mut request = SubscribeRequest {
             slots: [(
                 "slots".to_string(),
                 SubscribeRequestFilterSlots {
@@ -84,9 +86,20 @@ impl GrpcClient {
             )]
             .into_iter()
             .collect(),
-            commitment: Some(CommitmentLevel::Processed as i32),
             ..Default::default()
         };
+
+        if self.with_load {
+            request.accounts.insert(
+                "load".to_string(),
+                SubscribeRequestFilterAccounts {
+                    account: vec![],
+                    filters: vec![],
+                    nonempty_txn_signature: None,
+                    owner: vec!["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string()], // raydium amm v4 program
+                },
+            );
+        }
 
         let mut stream = client
             .subscribe_once(request)
@@ -194,9 +207,10 @@ impl SlotCollector {
         target_slots: usize,
         buffer_percent: f32,
         latency_samples: usize,
+        with_load: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
-        let client = GrpcClient::new(config)?;
+        let client = GrpcClient::new(config, with_load)?;
 
         // Measure ping upfront
         let latencies = client.measure_latency(latency_samples).await?;

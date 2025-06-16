@@ -40,6 +40,10 @@ struct Args {
     /// Log level
     #[clap(long, default_value = "info")]
     log_level: String,
+
+    /// With Load (subscribe to Raydium AMMV4 Program Account updates)
+    #[clap(long)]
+    with_load: bool,
 }
 
 #[tokio::main]
@@ -73,6 +77,7 @@ async fn main() -> Result<()> {
     };
 
     info!("Starting gRPC benchmark");
+    info!("With Load: {}", args.with_load);
     info!("Endpoint 1: {}", args.endpoint1);
     info!("Endpoint 2: {}", args.endpoint2);
     info!("Target slots: {}", args.slots);
@@ -87,6 +92,7 @@ async fn main() -> Result<()> {
         args.x_token1,
         args.x_token2,
         args.slots,
+        args.with_load,
     );
 
     info!("Starting data collection...");
