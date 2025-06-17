@@ -213,8 +213,12 @@ impl SlotCollector {
         let client = GrpcClient::new(config, with_load)?;
 
         // Measure ping upfront
-        let latencies = client.measure_latency(latency_samples).await?;
-        let avg_ping = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+        let avg_ping = if latency_samples > 0 {
+            let latencies = client.measure_latency(latency_samples).await?;
+            latencies.iter().sum::<Duration>() / latencies.len() as u32
+        } else {
+            Duration::ZERO
+        };
 
         tracing::info!(
             "{}: avg ping {:.2}ms",
