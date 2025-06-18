@@ -1,24 +1,15 @@
 use {
     crate::{
-        EndpointData,
-        types::{SlotStatus, SlotUpdate},
-    },
-    futures::StreamExt,
-    std::{
+        richat::richat_client_from_config, types::{SlotStatus, SlotUpdate}, EndpointData
+    }, futures::StreamExt, std::{
         collections::HashSet,
         time::{Duration, Instant, SystemTime},
-        vec,
-    },
-    tokio::sync::mpsc,
-    tracing::{error, info},
-    yellowstone_grpc_client::{GeyserGrpcClient, Interceptor},
-    yellowstone_grpc_proto::{
+    }, tokio::sync::mpsc, tracing::{error, info}, yellowstone_grpc_client::{GeyserGrpcClient, Interceptor}, yellowstone_grpc_proto::{
         geyser::{
-            SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots,
-            subscribe_update::UpdateOneof,
+            subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots
         },
         tonic::transport::ClientTlsConfig,
-    },
+    }
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -72,14 +63,12 @@ impl GrpcClient {
         Ok(Self { config, with_load })
     }
 
-    pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
-        let mut client = self.connect().await?;
 
+    fn create_subscribe_request(&self) -> SubscribeRequest {
         let mut request = SubscribeRequest {
             slots: [(
-                "slots".to_string(),
+                "".to_string(),
                 SubscribeRequestFilterSlots {
-                    // Filter for all slots
                     filter_by_commitment: Some(false), // don't specify commitment
                     interslot_updates: Some(true),     // receive updates for all slots
                 },
@@ -89,17 +78,20 @@ impl GrpcClient {
             ..Default::default()
         };
 
+        // If with_load is true, we also subscribe to all accounts updates
         if self.with_load {
             request.accounts.insert(
-                "load".to_string(),
-                SubscribeRequestFilterAccounts {
-                    account: vec![],
-                    filters: vec![],
-                    nonempty_txn_signature: None,
-                    owner: vec![],
-                },
+                "".to_string(),
+                SubscribeRequestFilterAccounts::default(),
             );
         }
+
+        request
+    }
+    pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = self.create_subscribe_request();
 
         let mut stream = client
             .subscribe_once(request)
@@ -123,6 +115,60 @@ impl GrpcClient {
         }
 
         Ok(())
+    }
+    pub async fn subscribe_slots_richat(
+        &self,
+        tx: mpsc::UnboundedSender<SlotUpdate>,
+    ) -> Result<()> {
+        let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
+            GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
+        })?;
+
+        let request = self.create_subscribe_request();
+
+        let mut stream = client
+            .subscribe_dragons_mouth_once(request)
+            .await
+            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?
+            .into_parsed();
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+
+            info!("Received message: {:?}", msg);
+            if let Some(UpdateOneof::Slot(slot)) = msg.update_oneof {
+                let update = SlotUpdate {
+                    slot: slot.slot,
+                    status: SlotStatus::from(slot.status),
+                    instant: Instant::now(),
+                    system_time: SystemTime::now(),
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn measure_latency_richat(&self, samples: usize) -> Result<Vec<Duration>> {
+        let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
+            GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
+        })?;
+        let mut latencies = Vec::with_capacity(samples);
+
+        for i in 0..samples {
+            let start = Instant::now();
+
+            client
+                .ping(i as i32)
+                .await
+                .map_err(|e| GrpcError::ConnectionFailed(format!("Ping failed: {}", e)))?;
+
+            latencies.push(start.elapsed());
+        }
+
+        Ok(latencies)
     }
 
     pub async fn measure_latency(&self, samples: usize) -> Result<Vec<Duration>> {
@@ -200,6 +246,7 @@ pub struct SlotCollector {
     target_slots: usize,
     buffer_percent: f32,
     pub avg_ping: Duration,
+    richat: bool,
 }
 
 impl SlotCollector {
@@ -209,19 +256,27 @@ impl SlotCollector {
         buffer_percent: f32,
         latency_samples: usize,
         with_load: bool,
+        richat: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
         let client = GrpcClient::new(config, with_load)?;
 
         // Measure ping upfront
         let avg_ping = if latency_samples > 0 {
-            let latencies = client.measure_latency(latency_samples).await?;
+            let latencies;
+            if richat {
+                info!("Measuring Richat latency with {} samples...", latency_samples);
+                latencies = client.measure_latency_richat(latency_samples).await?;
+            } else {
+                info!("Measuring Geyser latency with {} samples...", latency_samples);
+                latencies = client.measure_latency(latency_samples).await?;
+            }
             latencies.iter().sum::<Duration>() / latencies.len() as u32
         } else {
             Duration::ZERO
         };
 
-        tracing::info!(
+        info!(
             "{}: avg ping {:.2}ms",
             endpoint,
             avg_ping.as_secs_f64() * 1000.0
@@ -233,6 +288,7 @@ impl SlotCollector {
             target_slots,
             buffer_percent,
             avg_ping,
+            richat,
         })
     }
 
@@ -242,9 +298,17 @@ impl SlotCollector {
         let endpoint = self.endpoint_data.endpoint.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = self.client.subscribe_slots(tx).await {
-                error!("{} subscription failed: {}", endpoint, e);
+
+            if self.richat {
+                if let Err(e) = self.client.subscribe_slots_richat(tx).await {
+                    error!("{} subscription failed: {}", endpoint.clone(), e);
+                }
+            } else {
+                if let Err(e) = self.client.subscribe_slots(tx).await {
+                    error!("{} subscription failed: {}", endpoint.clone(), e);
+                }
             }
+           
         });
 
         let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
@@ -255,6 +319,7 @@ impl SlotCollector {
         let mut seen_slots = HashSet::with_capacity(pre_allocate_capacity);
 
         let mut last_logged_percent = 0;
+        let endpoint_clone = self.endpoint_data.endpoint.clone();
         while let Some(update) = rx.recv().await {
             // Track unique slots
             seen_slots.insert(update.slot);

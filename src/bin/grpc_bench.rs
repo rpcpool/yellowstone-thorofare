@@ -25,6 +25,14 @@ struct Args {
     #[clap(long)]
     x_token2: Option<String>,
 
+    /// Use Richat interface for endpoint1
+    #[clap(long)]
+    endpoint1_richat: bool,
+
+    /// Use Richat interface for endpoint2
+    #[clap(long)]
+    endpoint2_richat: bool,
+
     /// Number of slots to collect
     #[clap(long, default_value = "1000")]
     slots: usize,
@@ -78,8 +86,8 @@ async fn main() -> Result<()> {
 
     info!("Starting gRPC benchmark");
     info!("With Load: {}", args.with_load);
-    info!("Endpoint 1: {}", args.endpoint1);
-    info!("Endpoint 2: {}", args.endpoint2);
+    info!("Endpoint 1: {} ({})", args.endpoint1, if args.endpoint1_richat { "Richat" } else { "Yellowstone" });
+    info!("Endpoint 2: {} ({})", args.endpoint2, if args.endpoint2_richat { "Richat" } else { "Yellowstone" });
     info!("Target slots: {}", args.slots);
 
     // Start benchmark
@@ -91,6 +99,8 @@ async fn main() -> Result<()> {
         args.endpoint2,
         args.x_token1,
         args.x_token2,
+        args.endpoint1_richat,
+        args.endpoint2_richat,
         args.slots,
         args.with_load,
     );
