@@ -1,7 +1,7 @@
 use {
     crate::{
-        richat::richat_client_from_config, types::{SlotStatus, SlotUpdate}, EndpointData
-    }, futures::StreamExt, std::{
+        richat::{richat_client_from_config, RichatSubscriber}, types::{SlotStatus, SlotUpdate}, EndpointData
+    }, futures::StreamExt, richat_proto::richat::RichatFilter, std::{
         collections::HashSet,
         time::{Duration, Instant, SystemTime},
     }, tokio::sync::mpsc, tracing::{error, info}, yellowstone_grpc_client::{GeyserGrpcClient, Interceptor}, yellowstone_grpc_proto::{
@@ -116,21 +116,24 @@ impl GrpcClient {
 
         Ok(())
     }
+
     pub async fn subscribe_slots_richat(
         &self,
         tx: mpsc::UnboundedSender<SlotUpdate>,
     ) -> Result<()> {
-        let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
-            GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
-        })?;
 
-        let request = self.create_subscribe_request();
-
-        let mut stream = client
-            .subscribe_dragons_mouth_once(request)
-            .await
-            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?
-            .into_parsed();
+        let request = richat_proto::richat::GrpcSubscribeRequest {
+            filter: Some(RichatFilter {
+                disable_accounts: true,
+                disable_entries: true,
+                disable_transactions: true,
+            }),
+            ..Default::default()
+        };
+        let mut stream = RichatSubscriber::spawn_from_config(
+            request,
+            self.config.clone()
+        ).await.map_err(|e| GrpcError::ConnectionFailed(e.to_string()))?;
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
