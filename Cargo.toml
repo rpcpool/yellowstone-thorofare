@@ -31,6 +31,9 @@ clap = { version = "4.5.40", features = ["derive"] }
 anyhow = "1.0.98"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
+richat-client = "3.5.0"
+tonic = "0.12.3"
+richat-proto = "3.1.0"
 
 [lints.clippy]
 clone_on_ref_ptr = "deny"
