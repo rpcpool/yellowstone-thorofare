@@ -275,13 +275,13 @@ impl Processor {
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
-                    // Endpoint1 saw it first, so it waited for endpoint2
+                    // Endpoint1 saw it first, so endpoint2 had to wait
                     let wait_time = u2.instant.duration_since(u1.instant);
-                    (Some(wait_time), Some(Duration::from_secs(0)))
-                } else if u2.instant < u1.instant {
-                    // Endpoint2 saw it first, so it waited for endpoint1
-                    let wait_time = u1.instant.duration_since(u2.instant);
                     (Some(Duration::from_secs(0)), Some(wait_time))
+                } else if u2.instant < u1.instant {
+                    // Endpoint2 saw it first, so endpoint1 had to wait
+                    let wait_time = u1.instant.duration_since(u2.instant);
+                    (Some(wait_time), Some(Duration::from_secs(0)))
                 } else {
                     // Both saw it at the same time
                     (Some(Duration::from_secs(0)), Some(Duration::from_secs(0)))

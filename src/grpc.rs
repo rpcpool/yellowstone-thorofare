@@ -96,7 +96,7 @@ impl GrpcClient {
                     account: vec![],
                     filters: vec![],
                     nonempty_txn_signature: None,
-                    owner: vec!["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string()], // raydium amm v4 program
+                    owner: vec![],
                 },
             );
         }
@@ -119,6 +119,7 @@ impl GrpcClient {
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
             }
+            // All other messages will be discarded
         }
 
         Ok(())
