@@ -2,6 +2,7 @@ mod collector;
 mod config;
 mod grpc;
 mod processor;
+pub mod richat;
 mod types;
 
 pub use {
