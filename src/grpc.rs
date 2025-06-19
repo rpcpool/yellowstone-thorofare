@@ -124,7 +124,7 @@ impl GrpcClient {
 
         let request = richat_proto::richat::GrpcSubscribeRequest {
             filter: Some(RichatFilter {
-                disable_accounts: true,
+                disable_accounts: self.with_load, // Only subscribe to accounts if with_load is true
                 disable_entries: true,
                 disable_transactions: true,
             }),
@@ -137,8 +137,7 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
-
-            info!("Received message: {:?}", msg);
+            
             if let Some(UpdateOneof::Slot(slot)) = msg.update_oneof {
                 let update = SlotUpdate {
                     slot: slot.slot,
@@ -154,17 +153,20 @@ impl GrpcClient {
         Ok(())
     }
 
+
+    // This is a hack, we used to use ping to measure latency, but now we use get_version
+    // because richat don't have ping implemented (yet)
     pub async fn measure_latency_richat(&self, samples: usize) -> Result<Vec<Duration>> {
         let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
             GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
         })?;
         let mut latencies = Vec::with_capacity(samples);
 
-        for i in 0..samples {
+        for _ in 0..samples {
             let start = Instant::now();
 
             client
-                .ping(i as i32)
+                .get_version()
                 .await
                 .map_err(|e| GrpcError::ConnectionFailed(format!("Ping failed: {}", e)))?;
 
@@ -178,12 +180,12 @@ impl GrpcClient {
         let mut client = self.connect().await?;
         let mut latencies = Vec::with_capacity(samples);
 
-        for i in 0..samples {
+        for _ in 0..samples {
             let start = Instant::now();
 
             client
                 .geyser
-                .ping(yellowstone_grpc_proto::geyser::PingRequest { count: i as i32 })
+                .get_version(yellowstone_grpc_proto::geyser::GetVersionRequest::default())
                 .await
                 .map_err(|e| GrpcError::ConnectionFailed(format!("Ping failed: {}", e)))?;
 
@@ -322,7 +324,6 @@ impl SlotCollector {
         let mut seen_slots = HashSet::with_capacity(pre_allocate_capacity);
 
         let mut last_logged_percent = 0;
-        let endpoint_clone = self.endpoint_data.endpoint.clone();
         while let Some(update) = rx.recv().await {
             // Track unique slots
             seen_slots.insert(update.slot);
