@@ -36,7 +36,10 @@ pub struct EndpointInfo {
 
 #[derive(Debug, Serialize)]
 pub struct EndpointSummary {
+    // Its the delay from first_shred_ep1 to first_shred_ep2
     pub first_shred_delay: Percentiles,
+    // Its the delay from processed_ep1 to processed_ep2
+    pub processing_delay: Percentiles,
     pub download_time: Percentiles,
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
@@ -59,7 +62,8 @@ pub struct SlotComparison {
 
 #[derive(Debug, Serialize)]
 pub struct SlotDetail {
-    pub first_shred_delay_ms: Option<f64>, // Time waited for the fastest endpoint
+    pub first_shred_delay_ms: Option<f64>,
+    pub processing_delay_ms: Option<f64>,
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
 }
@@ -142,12 +146,14 @@ impl Processor {
         let mut dropped_slots = 0u64;
 
         let mut endpoint1_first_shred_delays = Vec::new();
+        let mut endpoint1_processing_delays = Vec::new();
         let mut endpoint1_download_times = Vec::new();
         let mut endpoint1_replay_times = Vec::new();
         let mut endpoint1_confirmation_times = Vec::new();
         let mut endpoint1_finalization_times = Vec::new();
 
         let mut endpoint2_first_shred_delays = Vec::new();
+        let mut endpoint2_processing_delays = Vec::new();
         let mut endpoint2_download_times = Vec::new();
         let mut endpoint2_replay_times = Vec::new();
         let mut endpoint2_confirmation_times = Vec::new();
@@ -186,6 +192,17 @@ impl Processor {
                 endpoint2_first_shred_delays.push(delay);
             }
 
+            // Calculate processing delays
+            let (ep1_processing_delay, ep2_processing_delay) = Self::calc_processing_delays(&map1, &map2, slot);
+
+            // Collect processing delays
+            if let Some(delay) = ep1_processing_delay {
+                endpoint1_processing_delays.push(delay);
+            }
+            if let Some(delay) = ep2_processing_delay {
+                endpoint2_processing_delays.push(delay);
+            }
+
             // Build endpoint-specific data
             let mut endpoint1_detail = Self::build_slot_detail(&map1, slot);
             let mut endpoint2_detail = Self::build_slot_detail(&map2, slot);
@@ -193,6 +210,10 @@ impl Processor {
             // Add first shred delays to slot details
             endpoint1_detail.first_shred_delay_ms = ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
             endpoint2_detail.first_shred_delay_ms = ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+
+            // Add processing delays to slot details
+            endpoint1_detail.processing_delay_ms = ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.processing_delay_ms = ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Collect metrics (we know these exist due to the check above)
             let d1 = Self::calc_download(&map1, slot).unwrap();
@@ -249,6 +270,7 @@ impl Processor {
             ],
             endpoint1_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint1_first_shred_delays),
+                processing_delay: Self::percentiles(endpoint1_processing_delays),
                 download_time: Self::percentiles(endpoint1_download_times),
                 replay_time: Self::percentiles(endpoint1_replay_times),
                 confirmation_time: Self::percentiles(endpoint1_confirmation_times),
@@ -256,6 +278,7 @@ impl Processor {
             },
             endpoint2_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
+                processing_delay: Self::percentiles(endpoint2_processing_delays),
                 download_time: Self::percentiles(endpoint2_download_times),
                 replay_time: Self::percentiles(endpoint2_replay_times),
                 confirmation_time: Self::percentiles(endpoint2_confirmation_times),
@@ -275,15 +298,41 @@ impl Processor {
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
-                    // Endpoint1 saw it first, so endpoint2 had to wait
+                    // Endpoint1 saw it first, so endpoint2 had the delay
                     let wait_time = u2.instant.duration_since(u1.instant);
                     (Some(Duration::from_secs(0)), Some(wait_time))
                 } else if u2.instant < u1.instant {
-                    // Endpoint2 saw it first, so endpoint1 had to wait
+                    // Endpoint2 saw it first, so endpoint1 had the delay
                     let wait_time = u1.instant.duration_since(u2.instant);
                     (Some(wait_time), Some(Duration::from_secs(0)))
                 } else {
                     // Both saw it at the same time
+                    (Some(Duration::from_secs(0)), Some(Duration::from_secs(0)))
+                }
+            }
+            _ => (None, None),
+        }
+    }
+
+    fn calc_processing_delays(
+        map1: &HashMap<SlotKey, SlotUpdate>,
+        map2: &HashMap<SlotKey, SlotUpdate>,
+        slot: u64,
+    ) -> (Option<Duration>, Option<Duration>) {
+        let key = (slot, SlotStatus::Processed);
+
+        match (map1.get(&key), map2.get(&key)) {
+            (Some(u1), Some(u2)) => {
+                if u1.instant < u2.instant {
+                    // Endpoint1 processed first, so endpoint2 had the delay
+                    let wait_time = u2.instant.duration_since(u1.instant);
+                    (Some(Duration::from_secs(0)), Some(wait_time))
+                } else if u2.instant < u1.instant {
+                    // Endpoint2 processed first, so endpoint1 had the delay
+                    let wait_time = u1.instant.duration_since(u2.instant);
+                    (Some(wait_time), Some(Duration::from_secs(0)))
+                } else {
+                    // Both processed at the same time
                     (Some(Duration::from_secs(0)), Some(Duration::from_secs(0)))
                 }
             }
@@ -322,6 +371,7 @@ impl Processor {
 
         SlotDetail {
             first_shred_delay_ms: None, // Will be filled by caller
+            processing_delay_ms: None, // Will be filled by caller
             transitions,
             durations,
         }

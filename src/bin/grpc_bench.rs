@@ -152,6 +152,12 @@ async fn main() -> Result<()> {
                 result.endpoint1_summary.first_shred_delay.p99
             );
             info!(
+                "Processing Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.processing_delay.p50,
+                result.endpoint1_summary.processing_delay.p90,
+                result.endpoint1_summary.processing_delay.p99
+            );
+            info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",
                 result.endpoint1_summary.download_time.p50,
                 result.endpoint1_summary.download_time.p90,
@@ -182,6 +188,12 @@ async fn main() -> Result<()> {
                 result.endpoint2_summary.first_shred_delay.p50,
                 result.endpoint2_summary.first_shred_delay.p90,
                 result.endpoint2_summary.first_shred_delay.p99
+            );
+            info!(
+                "Processing Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.processing_delay.p50,
+                result.endpoint2_summary.processing_delay.p90,
+                result.endpoint2_summary.processing_delay.p99
             );
             info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",
