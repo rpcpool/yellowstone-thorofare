@@ -124,7 +124,7 @@ impl GrpcClient {
 
         let request = richat_proto::richat::GrpcSubscribeRequest {
             filter: Some(RichatFilter {
-                disable_accounts: self.with_load, // Only subscribe to accounts if with_load is true
+                disable_accounts: !self.with_load, // Only subscribe to accounts if with_load is true
                 disable_entries: true,
                 disable_transactions: true,
             }),

@@ -146,10 +146,10 @@ async fn main() -> Result<()> {
 
             info!("\n=== ENDPOINT 1 PERFORMANCE (ms) ===");
             info!(
-                "Waiting Time: p50={:.2}, p90={:.2}, p99={:.2}",
-                result.endpoint1_summary.waiting_time.p50,
-                result.endpoint1_summary.waiting_time.p90,
-                result.endpoint1_summary.waiting_time.p99
+                "First Shred Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.first_shred_delay.p50,
+                result.endpoint1_summary.first_shred_delay.p90,
+                result.endpoint1_summary.first_shred_delay.p99
             );
             info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",
@@ -178,10 +178,10 @@ async fn main() -> Result<()> {
 
             info!("\n=== ENDPOINT 2 PERFORMANCE (ms) ===");
             info!(
-                "Waiting Time: p50={:.2}, p90={:.2}, p99={:.2}",
-                result.endpoint2_summary.waiting_time.p50,
-                result.endpoint2_summary.waiting_time.p90,
-                result.endpoint2_summary.waiting_time.p99
+                "First Shred Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.first_shred_delay.p50,
+                result.endpoint2_summary.first_shred_delay.p90,
+                result.endpoint2_summary.first_shred_delay.p99
             );
             info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",

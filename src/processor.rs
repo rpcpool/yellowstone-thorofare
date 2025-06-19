@@ -36,7 +36,7 @@ pub struct EndpointInfo {
 
 #[derive(Debug, Serialize)]
 pub struct EndpointSummary {
-    pub waiting_time: Percentiles,
+    pub first_shred_delay: Percentiles,
     pub download_time: Percentiles,
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
@@ -59,7 +59,7 @@ pub struct SlotComparison {
 
 #[derive(Debug, Serialize)]
 pub struct SlotDetail {
-    pub waiting_time_ms: Option<f64>, // Time waited for the fastest endpoint
+    pub first_shred_delay_ms: Option<f64>, // Time waited for the fastest endpoint
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
 }
@@ -141,13 +141,13 @@ impl Processor {
         let mut compared_slots = 0u64;
         let mut dropped_slots = 0u64;
 
-        let mut endpoint1_waiting_times = Vec::new();
+        let mut endpoint1_first_shred_delays = Vec::new();
         let mut endpoint1_download_times = Vec::new();
         let mut endpoint1_replay_times = Vec::new();
         let mut endpoint1_confirmation_times = Vec::new();
         let mut endpoint1_finalization_times = Vec::new();
 
-        let mut endpoint2_waiting_times = Vec::new();
+        let mut endpoint2_first_shred_delays = Vec::new();
         let mut endpoint2_download_times = Vec::new();
         let mut endpoint2_replay_times = Vec::new();
         let mut endpoint2_confirmation_times = Vec::new();
@@ -175,24 +175,24 @@ impl Processor {
                 continue;
             }
 
-            // Calculate waiting times
-            let (ep1_wait, ep2_wait) = Self::calc_waiting_times(&map1, &map2, slot);
+            // Calculate first shred delays
+            let (ep1_first_shred, ep2_first_shred) = Self::calc_first_shred_delays(&map1, &map2, slot);
 
-            // Collect waiting times
-            if let Some(wait) = ep1_wait {
-                endpoint1_waiting_times.push(wait);
+            // Collect first shred delays
+            if let Some(delay) = ep1_first_shred {
+                endpoint1_first_shred_delays.push(delay);
             }
-            if let Some(wait) = ep2_wait {
-                endpoint2_waiting_times.push(wait);
+            if let Some(delay) = ep2_first_shred {
+                endpoint2_first_shred_delays.push(delay);
             }
 
             // Build endpoint-specific data
             let mut endpoint1_detail = Self::build_slot_detail(&map1, slot);
             let mut endpoint2_detail = Self::build_slot_detail(&map2, slot);
 
-            // Add waiting times to slot details
-            endpoint1_detail.waiting_time_ms = ep1_wait.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.waiting_time_ms = ep2_wait.map(|d| d.as_secs_f64() * 1000.0);
+            // Add first shred delays to slot details
+            endpoint1_detail.first_shred_delay_ms = ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.first_shred_delay_ms = ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
 
             // Collect metrics (we know these exist due to the check above)
             let d1 = Self::calc_download(&map1, slot).unwrap();
@@ -248,14 +248,14 @@ impl Processor {
                 },
             ],
             endpoint1_summary: EndpointSummary {
-                waiting_time: Self::percentiles(endpoint1_waiting_times),
+                first_shred_delay: Self::percentiles(endpoint1_first_shred_delays),
                 download_time: Self::percentiles(endpoint1_download_times),
                 replay_time: Self::percentiles(endpoint1_replay_times),
                 confirmation_time: Self::percentiles(endpoint1_confirmation_times),
                 finalization_time: Self::percentiles(endpoint1_finalization_times),
             },
             endpoint2_summary: EndpointSummary {
-                waiting_time: Self::percentiles(endpoint2_waiting_times),
+                first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
                 download_time: Self::percentiles(endpoint2_download_times),
                 replay_time: Self::percentiles(endpoint2_replay_times),
                 confirmation_time: Self::percentiles(endpoint2_confirmation_times),
@@ -265,7 +265,7 @@ impl Processor {
         }
     }
 
-    fn calc_waiting_times(
+    fn calc_first_shred_delays(
         map1: &HashMap<SlotKey, SlotUpdate>,
         map2: &HashMap<SlotKey, SlotUpdate>,
         slot: u64,
@@ -321,7 +321,7 @@ impl Processor {
         };
 
         SlotDetail {
-            waiting_time_ms: None, // Will be filled by caller
+            first_shred_delay_ms: None, // Will be filled by caller
             transitions,
             durations,
         }
