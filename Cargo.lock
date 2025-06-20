@@ -6309,28 +6309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yellowstone-grpc-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "humantime-serde",
- "richat-client",
- "richat-proto",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tokio",
- "toml 0.8.23",
- "tonic",
- "tracing",
- "tracing-subscriber",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
-]
-
-[[package]]
 name = "yellowstone-grpc-client"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6360,6 +6338,28 @@ dependencies = [
  "solana-transaction-status",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "yellowstone-thorofare"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "humantime-serde",
+ "richat-client",
+ "richat-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+ "toml 0.8.23",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "yellowstone-grpc-client",
+ "yellowstone-grpc-proto",
 ]
 
 [[package]]

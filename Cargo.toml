@@ -1,5 +1,5 @@
 [package]
-name = "yellowstone-grpc-bench"
+name = "yellowstone-thorofare"
 version = "0.1.0"
 authors = ["Triton One"]
 edition = "2024"

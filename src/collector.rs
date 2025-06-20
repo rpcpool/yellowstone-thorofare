@@ -2,6 +2,7 @@ use {
     crate::{
         Config, GrpcConfig,
         grpc::{GrpcError, SlotCollector},
+        processor::{EndpointMetadata, GrpcConfigSummary},
         types::EndpointData,
     },
     std::{sync::Arc, time::Duration},
@@ -11,10 +12,12 @@ use {
 
 pub type RunCollectorResult = Result<
     (
-        EndpointData, // data for endpoint1
-        EndpointData, // data for endpoint2
-        Duration,     // avg ping for endpoint1
-        Duration,     // avg ping for endpoint2
+        EndpointData,        // data for endpoint1
+        EndpointData,        // data for endpoint2
+        EndpointMetadata,    // metadata for endpoint1
+        EndpointMetadata,    // metadata for endpoint2
+        Duration,            // avg ping for endpoint1
+        Duration,            // avg ping for endpoint2
     ),
     GrpcError,
 >;
@@ -55,10 +58,13 @@ impl Collector {
             endpoint2_richat,
         }
     }
+
     pub async fn run(self) -> RunCollectorResult {
         let barrier = Arc::new(Barrier::new(2));
-
-        info!("Collecting ping averages first...");
+        
+        info!("Collecting endpoint versions and ping averages...");
+        
+        // Create collectors and get version info
         let collector1 = SlotCollector::new(
             self.make_grpc_config(self.endpoint1.clone(), self.x_token1.clone()),
             self.slot_count,
@@ -68,6 +74,7 @@ impl Collector {
             self.endpoint1_richat,
         )
         .await?;
+        
         let collector2 = SlotCollector::new(
             self.make_grpc_config(self.endpoint2.clone(), self.x_token2.clone()),
             self.slot_count,
@@ -77,18 +84,30 @@ impl Collector {
             self.endpoint2_richat,  
         )
         .await?;
-
+        
+        // Capture metadata
+        let meta1 = EndpointMetadata {
+            plugin_type: if self.endpoint1_richat { "Richat".to_string() } else { "Yellowstone".to_string() },
+            plugin_version: collector1.version.clone(),
+        };
+        
+        let meta2 = EndpointMetadata {
+            plugin_type: if self.endpoint2_richat { "Richat".to_string() } else { "Yellowstone".to_string() },
+            plugin_version: collector2.version.clone(),
+        };
+        
         let ping1 = collector1.avg_ping;
         let ping2 = collector2.avg_ping;
-
+        
+        // Start synchronized collection
         let (data1, data2) = tokio::join!(
             Self::collect_with_barrier(collector1, Arc::clone(&barrier)),
             Self::collect_with_barrier(collector2, barrier)
         );
-
-        Ok((data1?, data2?, ping1, ping2))
+        
+        Ok((data1?, data2?, meta1, meta2, ping1, ping2))
     }
-
+    
     async fn collect_with_barrier(
         collector: SlotCollector,
         barrier: Arc<Barrier>,
@@ -96,7 +115,20 @@ impl Collector {
         barrier.wait().await;
         collector.collect().await
     }
-
+    
+    pub fn get_grpc_config_summary(&self) -> GrpcConfigSummary {
+        let g = &self.config.grpc;
+        GrpcConfigSummary {
+            connect_timeout_ms: g.connect_timeout.as_millis() as u64,
+            request_timeout_ms: g.request_timeout.as_millis() as u64,
+            max_message_size: g.max_message_size,
+            use_tls: g.use_tls,
+            http2_adaptive_window: g.http2_adaptive_window,
+            initial_connection_window_size: g.initial_connection_window_size,
+            initial_stream_window_size: g.initial_stream_window_size,
+        }
+    }
+    
     fn make_grpc_config(&self, endpoint: String, x_token: Option<String>) -> GrpcConfig {
         let g = &self.config.grpc;
         GrpcConfig {

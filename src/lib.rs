@@ -9,6 +9,6 @@ pub use {
     collector::Collector,
     config::Config,
     grpc::{GrpcClient, GrpcConfig},
-    processor::Processor,
+    processor::{Processor, EndpointMetadata, GrpcConfigSummary},
     types::{EndpointData, SlotStatus},
 };

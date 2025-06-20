@@ -9,6 +9,9 @@ use {
 
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
+    pub version: String,           // Yellowstone Thorofare version
+    pub with_load: bool,          // Whether --with-load was used
+    pub grpc_config: GrpcConfigSummary, // gRPC config settings
     pub metadata: Metadata,
     pub endpoints: [EndpointInfo; 2],
     pub endpoint1_summary: EndpointSummary,
@@ -17,18 +20,31 @@ pub struct BenchmarkResult {
 }
 
 #[derive(Debug, Serialize)]
+pub struct GrpcConfigSummary {
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub max_message_size: usize,
+    pub use_tls: bool,
+    pub http2_adaptive_window: bool,
+    pub initial_connection_window_size: Option<u32>,
+    pub initial_stream_window_size: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Metadata {
-    pub total_slots_collected: u64, // Sum of slots from both endpoints
-    pub common_slots: u64,          // Slots seen by both endpoints
-    pub compared_slots: u64,        // Slots actually compared (with all statuses)
-    pub dropped_slots: u64,         // Slots missing statuses or marked dead
+    pub total_slots_collected: u64, 
+    pub common_slots: u64,          
+    pub compared_slots: u64,        
+    pub dropped_slots: u64,         
     pub duration_ms: u64,
-    pub benchmark_start_time: u64, // Unix timestamp ms
+    pub benchmark_start_time: u64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EndpointInfo {
     pub endpoint: String,
+    pub plugin_type: String,    // "Yellowstone" or "Richat"
+    pub plugin_version: String,
     pub avg_ping_ms: f64,
     pub total_updates: u64,
     pub unique_slots: u64,
@@ -36,9 +52,7 @@ pub struct EndpointInfo {
 
 #[derive(Debug, Serialize)]
 pub struct EndpointSummary {
-    // Its the delay from first_shred_ep1 to first_shred_ep2
     pub first_shred_delay: Percentiles,
-    // Its the delay from processed_ep1 to processed_ep2
     pub processing_delay: Percentiles,
     pub download_time: Percentiles,
     pub replay_time: Percentiles,
@@ -71,7 +85,7 @@ pub struct SlotDetail {
 #[derive(Debug, Serialize)]
 pub struct Transition {
     pub status: String,
-    pub timestamp: u64, // Unix timestamp ms
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,12 +98,22 @@ pub struct StageDurations {
 
 type SlotKey = (u64, SlotStatus);
 
+pub struct EndpointMetadata {
+    pub plugin_type: String,
+    pub plugin_version: String,
+}
+
 pub struct Processor;
 
 impl Processor {
     pub fn process(
+        version: String,
+        with_load: bool,
+        grpc_config: GrpcConfigSummary,
         data1: EndpointData,
         data2: EndpointData,
+        meta1: EndpointMetadata,
+        meta2: EndpointMetadata,
         ping1: Duration,
         ping2: Duration,
         start_time: Instant,
@@ -246,6 +270,9 @@ impl Processor {
         }
 
         BenchmarkResult {
+            version,
+            with_load,
+            grpc_config,
             metadata: Metadata {
                 total_slots_collected,
                 common_slots: common_slots_count,
@@ -257,12 +284,16 @@ impl Processor {
             endpoints: [
                 EndpointInfo {
                     endpoint: data1.endpoint,
+                    plugin_type: meta1.plugin_type,
+                    plugin_version: meta1.plugin_version,
                     avg_ping_ms: ping1.as_secs_f64() * 1000.0,
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
                 },
                 EndpointInfo {
                     endpoint: data2.endpoint,
+                    plugin_type: meta2.plugin_type,
+                    plugin_version: meta2.plugin_version,
                     avg_ping_ms: ping2.as_secs_f64() * 1000.0,
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,

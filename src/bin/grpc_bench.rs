@@ -3,8 +3,10 @@ use {
     clap::Parser,
     std::{fs, time::Instant},
     tracing::{error, info},
-    yellowstone_grpc_bench::{Collector, Config, Processor},
+    yellowstone_thorofare::{Collector, Config, Processor},
 };
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[clap(name = "grpc-bench", about = "Benchmark gRPC endpoints")]
@@ -84,7 +86,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    info!("Starting gRPC benchmark");
+    info!("Starting Yellowstone-Thorofare v{}", VERSION);
     info!("With Load: {}", args.with_load);
     info!("Endpoint 1: {} ({})", args.endpoint1, if args.endpoint1_richat { "Richat" } else { "Yellowstone" });
     info!("Endpoint 2: {} ({})", args.endpoint2, if args.endpoint2_richat { "Richat" } else { "Yellowstone" });
@@ -107,11 +109,24 @@ async fn main() -> Result<()> {
 
     info!("Starting data collection...");
 
+    let grpc_config_summary = collector.get_grpc_config_summary();
+
     match collector.run().await {
-        Ok((data1, data2, ping1, ping2)) => {
+        Ok((data1, data2, meta1, meta2, ping1, ping2)) => {
             info!("Collection complete, processing results...");
 
-            let result = Processor::process(data1, data2, ping1, ping2, start_time);
+            let result = Processor::process(
+                VERSION.to_string(),
+                args.with_load,
+                grpc_config_summary,
+                data1,
+                data2,
+                meta1,
+                meta2,
+                ping1,
+                ping2,
+                start_time,
+            );
 
             // Save to JSON
             let json = serde_json::to_string_pretty(&result)?;
@@ -121,6 +136,8 @@ async fn main() -> Result<()> {
 
             // Print summary
             info!("\n=== BENCHMARK SUMMARY ===");
+            info!("Tool version: {}", VERSION);
+            info!("Load testing: {}", args.with_load);
             info!(
                 "Total slots collected: {}",
                 result.metadata.total_slots_collected
@@ -131,15 +148,21 @@ async fn main() -> Result<()> {
             info!("Duration: {}ms", result.metadata.duration_ms);
 
             info!(
-                "\nEndpoint 1: {} (ping: {:.2}ms)",
-                result.endpoints[0].endpoint, result.endpoints[0].avg_ping_ms
+                "\nEndpoint 1: {} ({} v{}) (ping: {:.2}ms)",
+                result.endpoints[0].endpoint, 
+                result.endpoints[0].plugin_type,
+                result.endpoints[0].plugin_version,
+                result.endpoints[0].avg_ping_ms
             );
             info!("  Total updates: {}", result.endpoints[0].total_updates);
             info!("  Unique slots: {}", result.endpoints[0].unique_slots);
 
             info!(
-                "\nEndpoint 2: {} (ping: {:.2}ms)",
-                result.endpoints[1].endpoint, result.endpoints[1].avg_ping_ms
+                "\nEndpoint 2: {} ({} v{}) (ping: {:.2}ms)",
+                result.endpoints[1].endpoint,
+                result.endpoints[1].plugin_type, 
+                result.endpoints[1].plugin_version,
+                result.endpoints[1].avg_ping_ms
             );
             info!("  Total updates: {}", result.endpoints[1].total_updates);
             info!("  Unique slots: {}", result.endpoints[1].unique_slots);
