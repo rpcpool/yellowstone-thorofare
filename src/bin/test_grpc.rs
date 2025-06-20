@@ -4,7 +4,7 @@ use {
     std::time::Duration,
     tokio::sync::mpsc,
     tracing::{error, info, warn},
-    yellowstone_grpc_bench::{GrpcClient, GrpcConfig, SlotStatus},
+    yellowstone_thorofare::{GrpcClient, GrpcConfig, SlotStatus},
 };
 
 #[derive(Parser)]

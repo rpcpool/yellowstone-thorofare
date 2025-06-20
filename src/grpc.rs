@@ -63,7 +63,6 @@ impl GrpcClient {
         Ok(Self { config, with_load })
     }
 
-
     fn create_subscribe_request(&self) -> SubscribeRequest {
         let mut request = SubscribeRequest {
             slots: [(
@@ -88,6 +87,7 @@ impl GrpcClient {
 
         request
     }
+
     pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
         let mut client = self.connect().await?;
 
@@ -121,7 +121,6 @@ impl GrpcClient {
         &self,
         tx: mpsc::UnboundedSender<SlotUpdate>,
     ) -> Result<()> {
-
         let request = richat_proto::richat::GrpcSubscribeRequest {
             filter: Some(RichatFilter {
                 disable_accounts: !self.with_load, // Only subscribe to accounts if with_load is true
@@ -153,9 +152,31 @@ impl GrpcClient {
         Ok(())
     }
 
+    pub async fn get_version(&self) -> Result<String> {
+        let mut client = self.connect().await?;
+        
+        let response = client
+            .geyser
+            .get_version(yellowstone_grpc_proto::geyser::GetVersionRequest::default())
+            .await
+            .map_err(|e| GrpcError::ConnectionFailed(format!("Version request failed: {}", e)))?;
+            
+        Ok(response.into_inner().version)
+    }
 
-    // This is a hack, we used to use ping to measure latency, but now we use get_version
-    // because richat don't have ping implemented (yet)
+    pub async fn get_version_richat(&self) -> Result<String> {
+        let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
+            GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
+        })?;
+        
+        let response = client
+            .get_version()
+            .await
+            .map_err(|e| GrpcError::ConnectionFailed(format!("Version request failed: {}", e)))?;
+            
+        Ok(response.version)
+    }
+
     pub async fn measure_latency_richat(&self, samples: usize) -> Result<Vec<Duration>> {
         let mut client = richat_client_from_config(self.config.clone()).await.map_err(|e| {
             GrpcError::ConnectionFailed(format!("Richat client connection failed: {}", e))
@@ -251,6 +272,7 @@ pub struct SlotCollector {
     target_slots: usize,
     buffer_percent: f32,
     pub avg_ping: Duration,
+    pub version: String,
     richat: bool,
 }
 
@@ -266,16 +288,26 @@ impl SlotCollector {
         let endpoint = config.endpoint.clone();
         let client = GrpcClient::new(config, with_load)?;
 
-        // Measure ping upfront
+        // Get version first
+        let version = if richat {
+            info!("Getting Richat version...");
+            client.get_version_richat().await?
+        } else {
+            info!("Getting Yellowstone version...");
+            client.get_version().await?
+        };
+        
+        info!("{}: version {}", endpoint, version);
+
+        // Measure ping
         let avg_ping = if latency_samples > 0 {
-            let latencies;
-            if richat {
+            let latencies = if richat {
                 info!("Measuring Richat latency with {} samples...", latency_samples);
-                latencies = client.measure_latency_richat(latency_samples).await?;
+                client.measure_latency_richat(latency_samples).await?
             } else {
                 info!("Measuring Geyser latency with {} samples...", latency_samples);
-                latencies = client.measure_latency(latency_samples).await?;
-            }
+                client.measure_latency(latency_samples).await?
+            };
             latencies.iter().sum::<Duration>() / latencies.len() as u32
         } else {
             Duration::ZERO
@@ -293,6 +325,7 @@ impl SlotCollector {
             target_slots,
             buffer_percent,
             avg_ping,
+            version,
             richat,
         })
     }
@@ -303,7 +336,6 @@ impl SlotCollector {
         let endpoint = self.endpoint_data.endpoint.clone();
 
         let handle = tokio::spawn(async move {
-
             if self.richat {
                 if let Err(e) = self.client.subscribe_slots_richat(tx).await {
                     error!("{} subscription failed: {}", endpoint.clone(), e);
@@ -313,7 +345,6 @@ impl SlotCollector {
                     error!("{} subscription failed: {}", endpoint.clone(), e);
                 }
             }
-           
         });
 
         let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
