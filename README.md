@@ -7,35 +7,35 @@ A simple tool to compare the performance of two Yellowstone gRPC endpoints.
 ### Build Release Binary
 ```bash
 cargo build --release
-# Binary will be at: target/release/grpc-bench
+# Binary will be at: target/release/thorofare
 ```
 
 ### Run Directly with Cargo
 ```bash
-cargo run --bin grpc-bench -- --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
+cargo run --bin thorofare -- --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
 ```
 
 ## Basic Usage
 
 ```bash
 # Compare two endpoints
-./grpc-bench --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
+./thorofare --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
 
 # With authentication tokens
-./grpc-bench \
+./thorofare \
   --endpoint1 https://endpoint1.com:443 \
   --endpoint2 https://endpoint2.com:443 \
   --x-token1 YOUR_TOKEN_1 \
   --x-token2 YOUR_TOKEN_2
 
 # Collect more slots (default is 1000)
-./grpc-bench \
+./thorofare \
   --endpoint1 https://endpoint1.com:443 \
   --endpoint2 https://endpoint2.com:443 \
   --slots 5000
 
 # With load testing (subscribes to additional account updates)
-./grpc-bench \
+./thorofare \
   --endpoint1 https://endpoint1.com:443 \
   --endpoint2 https://endpoint2.com:443 \
   --with-load \

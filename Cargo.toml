@@ -3,7 +3,7 @@ name = "yellowstone-thorofare"
 version = "0.1.0"
 authors = ["Triton One"]
 edition = "2024"
-description = "Benchmarking tool for comparing Solana node performance via Yellowstone gRPC"
+description = "Benchmarking tool for comparing Solana nodes and Geyser Plugins (currently only gRPC protocol)"
 license = "Apache-2.0"
 resolver = "2"
 publish = false
@@ -13,8 +13,8 @@ name = "test-grpc"
 path = "src/bin/test_grpc.rs"
 
 [[bin]]
-name = "grpc-bench"
-path = "src/bin/grpc_bench.rs"
+name = "thorofare"
+path = "src/bin/thorofare.rs"
 
 [dependencies]
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros", "sync"] }

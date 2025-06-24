@@ -181,6 +181,18 @@ async fn main() -> Result<()> {
                 result.endpoint1_summary.processing_delay.p99
             );
             info!(
+                "Confirmation Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.confirmation_delay.p50,
+                result.endpoint1_summary.confirmation_delay.p90,
+                result.endpoint1_summary.confirmation_delay.p99
+            );
+            info!(
+                "Finalization Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.finalization_delay.p50,
+                result.endpoint1_summary.finalization_delay.p90,
+                result.endpoint1_summary.finalization_delay.p99
+            );
+            info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",
                 result.endpoint1_summary.download_time.p50,
                 result.endpoint1_summary.download_time.p90,

@@ -54,6 +54,8 @@ pub struct EndpointInfo {
 pub struct EndpointSummary {
     pub first_shred_delay: Percentiles,
     pub processing_delay: Percentiles,
+    pub confirmation_delay: Percentiles,
+    pub finalization_delay: Percentiles,
     pub download_time: Percentiles,
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
@@ -78,6 +80,8 @@ pub struct SlotComparison {
 pub struct SlotDetail {
     pub first_shred_delay_ms: Option<f64>,
     pub processing_delay_ms: Option<f64>,
+    pub confirmation_delay_ms: Option<f64>,
+    pub finalization_delay_ms: Option<f64>,
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
 }
@@ -171,6 +175,8 @@ impl Processor {
 
         let mut endpoint1_first_shred_delays = Vec::new();
         let mut endpoint1_processing_delays = Vec::new();
+        let mut endpoint1_confirmation_delays = Vec::new();
+        let mut endpoint1_finalization_delays = Vec::new();
         let mut endpoint1_download_times = Vec::new();
         let mut endpoint1_replay_times = Vec::new();
         let mut endpoint1_confirmation_times = Vec::new();
@@ -178,6 +184,8 @@ impl Processor {
 
         let mut endpoint2_first_shred_delays = Vec::new();
         let mut endpoint2_processing_delays = Vec::new();
+        let mut endpoint2_confirmation_delays = Vec::new();
+        let mut endpoint2_finalization_delays = Vec::new();
         let mut endpoint2_download_times = Vec::new();
         let mut endpoint2_replay_times = Vec::new();
         let mut endpoint2_confirmation_times = Vec::new();
@@ -225,6 +233,28 @@ impl Processor {
             }
             if let Some(delay) = ep2_processing_delay {
                 endpoint2_processing_delays.push(delay);
+            }
+
+            // Calculate confirmation delays
+            let (ep1_confirmation_delay, ep2_confirmation_delay) = Self::calc_confirmation_delays(&map1, &map2, slot);
+
+            // Collect confirmation delays
+            if let Some(delay) = ep1_confirmation_delay {
+                endpoint1_confirmation_delays.push(delay);
+            }
+            if let Some(delay) = ep2_confirmation_delay {
+                endpoint2_confirmation_delays.push(delay);
+            }
+
+            // Calculate finalization delays
+            let (ep1_finalization_delay, ep2_finalization_delay) = Self::calc_finalization_delays(&map1, &map2, slot);
+
+            // Collect finalization delays
+            if let Some(delay) = ep1_finalization_delay {
+                endpoint1_finalization_delays.push(delay);
+            }
+            if let Some(delay) = ep2_finalization_delay {
+                endpoint2_finalization_delays.push(delay);
             }
 
             // Build endpoint-specific data
@@ -302,6 +332,8 @@ impl Processor {
             endpoint1_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint1_first_shred_delays),
                 processing_delay: Self::percentiles(endpoint1_processing_delays),
+                confirmation_delay: Self::percentiles(endpoint1_confirmation_delays),
+                finalization_delay: Self::percentiles(endpoint1_finalization_delays),
                 download_time: Self::percentiles(endpoint1_download_times),
                 replay_time: Self::percentiles(endpoint1_replay_times),
                 confirmation_time: Self::percentiles(endpoint1_confirmation_times),
@@ -310,6 +342,8 @@ impl Processor {
             endpoint2_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
                 processing_delay: Self::percentiles(endpoint2_processing_delays),
+                confirmation_delay: Self::percentiles(endpoint2_confirmation_delays),
+                finalization_delay: Self::percentiles(endpoint2_finalization_delays),
                 download_time: Self::percentiles(endpoint2_download_times),
                 replay_time: Self::percentiles(endpoint2_replay_times),
                 confirmation_time: Self::percentiles(endpoint2_confirmation_times),
@@ -319,13 +353,14 @@ impl Processor {
         }
     }
 
-    fn calc_first_shred_delays(
+    fn calc_delays(
         map1: &HashMap<SlotKey, SlotUpdate>,
         map2: &HashMap<SlotKey, SlotUpdate>,
         slot: u64,
+        slot_status: SlotStatus,
     ) -> (Option<Duration>, Option<Duration>) {
-        let key = (slot, SlotStatus::FirstShredReceived);
-
+        let key = (slot, slot_status);
+        
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
@@ -345,30 +380,36 @@ impl Processor {
         }
     }
 
+    fn calc_first_shred_delays(
+        map1: &HashMap<SlotKey, SlotUpdate>,
+        map2: &HashMap<SlotKey, SlotUpdate>,
+        slot: u64,
+    ) -> (Option<Duration>, Option<Duration>) {
+       Self::calc_delays(map1, map2, slot, SlotStatus::FirstShredReceived)
+    }
+
     fn calc_processing_delays(
         map1: &HashMap<SlotKey, SlotUpdate>,
         map2: &HashMap<SlotKey, SlotUpdate>,
         slot: u64,
     ) -> (Option<Duration>, Option<Duration>) {
-        let key = (slot, SlotStatus::Processed);
+        Self::calc_delays(map1, map2, slot, SlotStatus::Processed)
+    }
 
-        match (map1.get(&key), map2.get(&key)) {
-            (Some(u1), Some(u2)) => {
-                if u1.instant < u2.instant {
-                    // Endpoint1 processed first, so endpoint2 had the delay
-                    let wait_time = u2.instant.duration_since(u1.instant);
-                    (Some(Duration::from_secs(0)), Some(wait_time))
-                } else if u2.instant < u1.instant {
-                    // Endpoint2 processed first, so endpoint1 had the delay
-                    let wait_time = u1.instant.duration_since(u2.instant);
-                    (Some(wait_time), Some(Duration::from_secs(0)))
-                } else {
-                    // Both processed at the same time
-                    (Some(Duration::from_secs(0)), Some(Duration::from_secs(0)))
-                }
-            }
-            _ => (None, None),
-        }
+    fn calc_confirmation_delays(
+        map1: &HashMap<SlotKey, SlotUpdate>,
+        map2: &HashMap<SlotKey, SlotUpdate>,
+        slot: u64,
+    ) -> (Option<Duration>, Option<Duration>) {
+        Self::calc_delays(map1, map2, slot, SlotStatus::Confirmed)
+    }
+
+    fn calc_finalization_delays(
+        map1: &HashMap<SlotKey, SlotUpdate>,
+        map2: &HashMap<SlotKey, SlotUpdate>,
+        slot: u64,
+    ) -> (Option<Duration>, Option<Duration>) {
+        Self::calc_delays(map1, map2, slot, SlotStatus::Finalized)
     }
 
     fn build_slot_detail(map: &HashMap<SlotKey, SlotUpdate>, slot: u64) -> SlotDetail {
@@ -403,6 +444,8 @@ impl Processor {
         SlotDetail {
             first_shred_delay_ms: None, // Will be filled by caller
             processing_delay_ms: None, // Will be filled by caller
+            confirmation_delay_ms: None, // Will be filled by caller
+            finalization_delay_ms: None, // Will be filled by caller
             transitions,
             durations,
         }
