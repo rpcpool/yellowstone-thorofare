@@ -269,6 +269,14 @@ impl Processor {
             endpoint1_detail.processing_delay_ms = ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
             endpoint2_detail.processing_delay_ms = ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
 
+            // Add confirmation delays to slot details
+            endpoint1_detail.confirmation_delay_ms = ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.confirmation_delay_ms = ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+
+            // Add finalization delays to slot details
+            endpoint1_detail.finalization_delay_ms = ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.finalization_delay_ms = ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+
             // Collect metrics (we know these exist due to the check above)
             let d1 = Self::calc_download(&map1, slot).unwrap();
             let d2 = Self::calc_download(&map2, slot).unwrap();
