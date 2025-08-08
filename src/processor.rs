@@ -1,5 +1,5 @@
 use {
-    crate::types::{EndpointData, SlotStatus, SlotUpdate},
+    crate::types::{EndpointData, SlotStatus, SlotUpdate, AccountUpdate},
     serde::Serialize,
     std::{
         collections::{HashMap, HashSet},
@@ -10,7 +10,7 @@ use {
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
     pub version: String,           // Yellowstone Thorofare version
-    pub with_load: bool,          // Whether --with-load was used
+    pub with_accounts: bool,          // Whether --with-accounts was used
     pub grpc_config: GrpcConfigSummary, // gRPC config settings
     pub metadata: Metadata,
     pub endpoints: [EndpointInfo; 2],
@@ -32,12 +32,13 @@ pub struct GrpcConfigSummary {
 
 #[derive(Debug, Serialize)]
 pub struct Metadata {
-    pub total_slots_collected: u64, 
-    pub common_slots: u64,          
-    pub compared_slots: u64,        
-    pub dropped_slots: u64,         
+    pub total_slots_collected: u64,
+    pub common_slots: u64,
+    pub compared_slots: u64,
+    pub dropped_slots: u64,
     pub duration_ms: u64,
     pub benchmark_start_time: u64,
+    pub total_account_updates: Option<(u64, u64)>, // (endpoint1, endpoint2)
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +49,7 @@ pub struct EndpointInfo {
     pub avg_ping_ms: f64,
     pub total_updates: u64,
     pub unique_slots: u64,
+    pub account_updates: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +86,7 @@ pub struct SlotDetail {
     pub finalization_delay_ms: Option<f64>,
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
+    pub account_updates: Vec<AccountUpdateDetail>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,7 +103,16 @@ pub struct StageDurations {
     pub finalization_ms: f64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AccountUpdateDetail {
+    pub pubkey: String,
+    pub write_version: u64,
+    pub tx_signature: String,
+    pub delay_ms: Option<f64>,  // Delay vs other endpoint if matched
+}
+
 type SlotKey = (u64, SlotStatus);
+type AccountKey = (u64, String, u64, String); // (slot, pubkey, write_version, signature)
 
 pub struct EndpointMetadata {
     pub plugin_type: String,
@@ -110,9 +122,11 @@ pub struct EndpointMetadata {
 pub struct Processor;
 
 impl Processor {
+    const MIN_ACCOUNT_RATIO: f64 = 0.8;
+
     pub fn process(
         version: String,
-        with_load: bool,
+        with_accounts: bool,
         grpc_config: GrpcConfigSummary,
         data1: EndpointData,
         data2: EndpointData,
@@ -132,10 +146,24 @@ impl Processor {
         // Get unique slots from each endpoint
         let endpoint1_updates = data1.updates.len() as u64;
         let endpoint2_updates = data2.updates.len() as u64;
+        
+        // Account updates counts
+        let endpoint1_account_updates = data1.account_updates.len() as u64;
+        let endpoint2_account_updates = data2.account_updates.len() as u64;
 
         // Build lookup maps
         let map1 = Self::build_map(data1.updates);
         let map2 = Self::build_map(data2.updates);
+
+        // Build account maps if we have account data
+        let (accounts1_by_slot, accounts2_by_slot, account_match_map) = if with_accounts {
+            let accounts1 = Self::group_accounts_by_slot(&data1.account_updates);
+            let accounts2 = Self::group_accounts_by_slot(&data2.account_updates);
+            let matches = Self::build_account_match_map(&data1.account_updates, &data2.account_updates);
+            (accounts1, accounts2, matches)
+        } else {
+            (HashMap::new(), HashMap::new(), HashMap::new())
+        };
 
         // Count unique slots per endpoint
         let endpoint1_slots: HashSet<u64> = map1.keys().map(|(slot, _)| *slot).collect();
@@ -213,6 +241,21 @@ impl Processor {
                 continue;
             }
 
+            // If we have account data, check if both endpoints have reasonable amounts
+            if with_accounts {
+                let count1 = accounts1_by_slot.get(&slot).map(|v| v.len()).unwrap_or(0);
+                let count2 = accounts2_by_slot.get(&slot).map(|v| v.len()).unwrap_or(0);
+                
+                if count1 > 0 && count2 > 0 {
+                    let ratio = count1.min(count2) as f64 / count1.max(count2) as f64;
+                    if ratio < Self::MIN_ACCOUNT_RATIO {
+                        // One endpoint has significantly fewer updates, skip
+                        dropped_slots += 1;
+                        continue;
+                    }
+                }
+            }
+
             // Calculate first shred delays
             let (ep1_first_shred, ep2_first_shred) = Self::calc_first_shred_delays(&map1, &map2, slot);
 
@@ -277,6 +320,20 @@ impl Processor {
             endpoint1_detail.finalization_delay_ms = ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
             endpoint2_detail.finalization_delay_ms = ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
 
+            // Add account updates to slot details
+            if with_accounts {
+                endpoint1_detail.account_updates = Self::build_account_details(
+                    accounts1_by_slot.get(&slot),
+                    &account_match_map,
+                    1,  // endpoint 1
+                );
+                endpoint2_detail.account_updates = Self::build_account_details(
+                    accounts2_by_slot.get(&slot),
+                    &account_match_map,
+                    2,  // endpoint 2
+                );
+            }
+
             // Collect metrics (we know these exist due to the check above)
             let d1 = Self::calc_download(&map1, slot).unwrap();
             let d2 = Self::calc_download(&map2, slot).unwrap();
@@ -309,7 +366,7 @@ impl Processor {
 
         BenchmarkResult {
             version,
-            with_load,
+            with_accounts,
             grpc_config,
             metadata: Metadata {
                 total_slots_collected,
@@ -318,6 +375,11 @@ impl Processor {
                 dropped_slots,
                 duration_ms,
                 benchmark_start_time: benchmark_start,
+                total_account_updates: if with_accounts {
+                    Some((endpoint1_account_updates, endpoint2_account_updates))
+                } else {
+                    None
+                },
             },
             endpoints: [
                 EndpointInfo {
@@ -327,6 +389,7 @@ impl Processor {
                     avg_ping_ms: ping1.as_secs_f64() * 1000.0,
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
+                    account_updates: if with_accounts { Some(endpoint1_account_updates) } else { None },
                 },
                 EndpointInfo {
                     endpoint: data2.endpoint,
@@ -335,6 +398,7 @@ impl Processor {
                     avg_ping_ms: ping2.as_secs_f64() * 1000.0,
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,
+                    account_updates: if with_accounts { Some(endpoint2_account_updates) } else { None },
                 },
             ],
             endpoint1_summary: EndpointSummary {
@@ -359,6 +423,103 @@ impl Processor {
             },
             slots: slot_comparisons,
         }
+    }
+
+    // Group account updates by slot
+    fn group_accounts_by_slot(updates: &[AccountUpdate]) -> HashMap<u64, Vec<AccountUpdate>> {
+        let mut by_slot = HashMap::new();
+        for update in updates {
+            by_slot
+                .entry(update.slot)
+                .or_insert_with(|| Vec::with_capacity(100))
+                .push(update.clone());
+        }
+        by_slot
+    }
+
+    // Build map to match account updates between endpoints
+    fn build_account_match_map(
+        updates1: &[AccountUpdate],
+        updates2: &[AccountUpdate],
+    ) -> HashMap<AccountKey, (Option<Instant>, Option<Instant>)> {
+        let mut map = HashMap::new();
+        
+        // Add all updates from endpoint1
+        for update in updates1 {
+            let key = (
+                update.slot,
+                update.pubkey.to_string(),
+                update.write_version,
+                update.tx_signature.to_string(),
+            );
+            map.entry(key).or_insert((None, None)).0 = Some(update.instant);
+        }
+        
+        // Add all updates from endpoint2
+        for update in updates2 {
+            let key = (
+                update.slot,
+                update.pubkey.to_string(),
+                update.write_version,
+                update.tx_signature.to_string(),
+            );
+            map.entry(key).or_insert((None, None)).1 = Some(update.instant);
+        }
+        
+        map
+    }
+
+    // Build account details for JSON output
+    fn build_account_details(
+        updates: Option<&Vec<AccountUpdate>>,
+        match_map: &HashMap<AccountKey, (Option<Instant>, Option<Instant>)>,
+        endpoint_num: usize,
+    ) -> Vec<AccountUpdateDetail> {
+        let mut details = Vec::new();
+        
+        if let Some(updates) = updates {
+            for update in updates {
+                let key = (
+                    update.slot,
+                    update.pubkey.to_string(),
+                    update.write_version,
+                    update.tx_signature.to_string(),
+                );
+                
+                // Calculate delay if matched
+                let delay_ms = if let Some((instant1, instant2)) = match_map.get(&key) {
+                    match (instant1, instant2) {
+                        (Some(i1), Some(i2)) => {
+                            if endpoint_num == 1 {
+                                if i1 > i2 {
+                                    Some(i1.duration_since(*i2).as_secs_f64() * 1000.0)
+                                } else {
+                                    Some(0.0)
+                                }
+                            } else {
+                                if i2 > i1 {
+                                    Some(i2.duration_since(*i1).as_secs_f64() * 1000.0)
+                                } else {
+                                    Some(0.0)
+                                }
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                
+                details.push(AccountUpdateDetail {
+                    pubkey: update.pubkey.to_string(),
+                    write_version: update.write_version,
+                    tx_signature: update.tx_signature.to_string(),
+                    delay_ms,
+                });
+            }
+        }
+        
+        details
     }
 
     fn calc_delays(
@@ -456,6 +617,7 @@ impl Processor {
             finalization_delay_ms: None, // Will be filled by caller
             transitions,
             durations,
+            account_updates: Vec::new(), // Will be filled by caller if with_accounts
         }
     }
 

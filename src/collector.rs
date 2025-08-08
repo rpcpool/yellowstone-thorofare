@@ -29,7 +29,7 @@ pub struct Collector {
     x_token1: Option<String>,
     x_token2: Option<String>,
     slot_count: usize,
-    with_load: bool,
+    with_accounts: bool,
     endpoint1_richat: bool,
     endpoint2_richat: bool,
 }
@@ -44,7 +44,7 @@ impl Collector {
         endpoint1_richat: bool,
         endpoint2_richat: bool,
         slot_count: usize,
-        with_load: bool,
+        with_accounts: bool,
     ) -> Self {
         Self {
             config,
@@ -53,7 +53,7 @@ impl Collector {
             x_token1,
             x_token2,
             slot_count,
-            with_load,
+            with_accounts,
             endpoint1_richat,
             endpoint2_richat,
         }
@@ -70,7 +70,7 @@ impl Collector {
             self.slot_count,
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
-            self.with_load,
+            self.with_accounts,
             self.endpoint1_richat,
         )
         .await?;
@@ -80,8 +80,8 @@ impl Collector {
             self.slot_count,
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
-            self.with_load,
-            self.endpoint2_richat,  
+            self.with_accounts,
+            self.endpoint2_richat,
         )
         .await?;
         
@@ -100,12 +100,26 @@ impl Collector {
         let ping2 = collector2.avg_ping;
         
         // Start synchronized collection
+        info!("Starting synchronized collection{}", 
+            if self.with_accounts { " with account updates" } else { "" });
+            
         let (data1, data2) = tokio::join!(
             Self::collect_with_barrier(collector1, Arc::clone(&barrier)),
             Self::collect_with_barrier(collector2, barrier)
         );
         
-        Ok((data1?, data2?, meta1, meta2, ping1, ping2))
+        let data1 = data1?;
+        let data2 = data2?;
+        
+        // Log account collection results
+        if self.with_accounts {
+            info!("Collected {} account updates from {}", 
+                data1.account_updates.len(), data1.endpoint);
+            info!("Collected {} account updates from {}", 
+                data2.account_updates.len(), data2.endpoint);
+        }
+        
+        Ok((data1, data2, meta1, meta2, ping1, ping2))
     }
     
     async fn collect_with_barrier(

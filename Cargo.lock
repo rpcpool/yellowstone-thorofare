@@ -6352,6 +6352,8 @@ dependencies = [
  "richat-proto",
  "serde",
  "serde_json",
+ "solana-pubkey",
+ "solana-signature",
  "thiserror 2.0.12",
  "tokio",
  "toml 0.8.23",

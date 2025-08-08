@@ -24,6 +24,8 @@ futures = "0.3.31"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 thiserror = "2.0.12"
+solana-pubkey = "2"
+solana-signature = "2"
 humantime-serde = "1.1.1"
 toml = "0.8.23"
 clap = { version = "4.5.40", features = ["derive"] }

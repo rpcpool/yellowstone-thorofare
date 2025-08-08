@@ -1,10 +1,21 @@
 use {
     crate::{
-        richat::{richat_client_from_config, RichatSubscriber}, types::{SlotStatus, SlotUpdate}, EndpointData
-    }, futures::StreamExt, richat_proto::richat::RichatFilter, std::{
+        richat::{richat_client_from_config, RichatSubscriber}, 
+        types::{SlotStatus, SlotUpdate, AccountUpdate}, 
+        EndpointData
+    }, 
+    futures::StreamExt, 
+    richat_proto::richat::RichatFilter, 
+    solana_pubkey::Pubkey,
+    solana_signature::Signature,
+    std::{
         collections::HashSet,
         time::{Duration, Instant, SystemTime},
-    }, tokio::sync::mpsc, tracing::{error, info}, yellowstone_grpc_client::{GeyserGrpcClient, Interceptor}, yellowstone_grpc_proto::{
+    }, 
+    tokio::sync::mpsc, 
+    tracing::{error, info}, 
+    yellowstone_grpc_client::{GeyserGrpcClient, Interceptor}, 
+    yellowstone_grpc_proto::{
         geyser::{
             subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots
         },
@@ -49,22 +60,25 @@ pub struct GrpcConfig {
     pub buffer_size: Option<usize>,
 }
 
+#[derive(Clone)]
 pub struct GrpcClient {
     config: GrpcConfig,
-    with_load: bool,
+    with_accounts: bool,
 }
 
 impl GrpcClient {
-    pub fn new(config: GrpcConfig, with_load: bool) -> Result<Self> {
+    pub fn new(config: GrpcConfig, with_accounts: bool) -> Result<Self> {
         if config.endpoint.is_empty() {
             return Err(GrpcError::InvalidConfig("Empty endpoint".into()));
         }
 
-        Ok(Self { config, with_load })
+        Ok(Self { config, with_accounts })
     }
 
-    fn create_subscribe_request(&self) -> SubscribeRequest {
-        let mut request = SubscribeRequest {
+    pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = SubscribeRequest {
             slots: [(
                 "".to_string(),
                 SubscribeRequestFilterSlots {
@@ -76,22 +90,6 @@ impl GrpcClient {
             .collect(),
             ..Default::default()
         };
-
-        // If with_load is true, we also subscribe to all accounts updates
-        if self.with_load {
-            request.accounts.insert(
-                "".to_string(),
-                SubscribeRequestFilterAccounts::default(),
-            );
-        }
-
-        request
-    }
-
-    pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
-        let mut client = self.connect().await?;
-
-        let request = self.create_subscribe_request();
 
         let mut stream = client
             .subscribe_once(request)
@@ -111,7 +109,51 @@ impl GrpcClient {
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
             }
-            // All other messages will be discarded
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe_accounts(&self, tx: mpsc::UnboundedSender<AccountUpdate>) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = SubscribeRequest {
+            accounts: [(
+                "".to_string(),
+                SubscribeRequestFilterAccounts::default(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let mut stream = client
+            .subscribe_once(request)
+            .await
+            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+
+            if let Some(UpdateOneof::Account(account)) = msg.update_oneof {
+                let pubkey = Pubkey::try_from(account.account.as_ref().map(|a| a.pubkey.as_slice()).unwrap_or_default())
+                    .unwrap_or_default();
+                
+                let tx_signature = account.account.as_ref()
+                    .and_then(|a| a.txn_signature.as_ref())
+                    .and_then(|sig| Signature::try_from(sig.as_slice()).ok())
+                    .unwrap_or_default();
+
+                let update = AccountUpdate {
+                    slot: account.slot,
+                    pubkey,
+                    write_version: account.account.as_ref().map(|a| a.write_version).unwrap_or(0),
+                    tx_signature,
+                    instant: Instant::now(),
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
         }
 
         Ok(())
@@ -123,7 +165,7 @@ impl GrpcClient {
     ) -> Result<()> {
         let request = richat_proto::richat::GrpcSubscribeRequest {
             filter: Some(RichatFilter {
-                disable_accounts: !self.with_load, // Only subscribe to accounts if with_load is true
+                disable_accounts: true,  // Only want slots
                 disable_entries: true,
                 disable_transactions: true,
             }),
@@ -143,6 +185,51 @@ impl GrpcClient {
                     status: SlotStatus::from(slot.status),
                     instant: Instant::now(),
                     system_time: SystemTime::now(),
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe_accounts_richat(
+        &self,
+        tx: mpsc::UnboundedSender<AccountUpdate>,
+    ) -> Result<()> {
+        let request = richat_proto::richat::GrpcSubscribeRequest {
+            filter: Some(RichatFilter {
+                disable_accounts: false,  // Want accounts
+                disable_entries: true,
+                disable_transactions: true,
+            }),
+            ..Default::default()
+        };
+        
+        let mut stream = RichatSubscriber::spawn_from_config(
+            request,
+            self.config.clone()
+        ).await.map_err(|e| GrpcError::ConnectionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            
+            if let Some(UpdateOneof::Account(account)) = msg.update_oneof {
+                let pubkey = Pubkey::try_from(account.account.as_ref().map(|a| a.pubkey.as_slice()).unwrap_or_default())
+                    .unwrap_or_default();
+                
+                let tx_signature = account.account.as_ref()
+                    .and_then(|a| a.txn_signature.as_ref())
+                    .and_then(|sig| Signature::try_from(sig.as_slice()).ok())
+                    .unwrap_or_default();
+
+                let update = AccountUpdate {
+                    slot: account.slot,
+                    pubkey,
+                    write_version: account.account.as_ref().map(|a| a.write_version).unwrap_or(0),
+                    tx_signature,
+                    instant: Instant::now(),
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -282,11 +369,11 @@ impl SlotCollector {
         target_slots: usize,
         buffer_percent: f32,
         latency_samples: usize,
-        with_load: bool,
+        with_accounts: bool,
         richat: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
-        let client = GrpcClient::new(config, with_load)?;
+        let client = GrpcClient::new(config, with_accounts)?;
 
         // Get version first
         let version = if richat {
@@ -331,59 +418,96 @@ impl SlotCollector {
     }
 
     pub async fn collect(mut self) -> Result<EndpointData> {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (slot_tx, mut slot_rx) = mpsc::unbounded_channel();
+        let (account_tx, mut account_rx) = mpsc::unbounded_channel();
 
         let endpoint = self.endpoint_data.endpoint.clone();
+        let richat = self.richat;
+        let with_accounts = self.client.with_accounts;
 
-        let handle = tokio::spawn(async move {
-            if self.richat {
-                if let Err(e) = self.client.subscribe_slots_richat(tx).await {
-                    error!("{} subscription failed: {}", endpoint.clone(), e);
+        // Spawn slot collector
+        let slot_handle = {
+            let client = self.client.clone();
+            let endpoint = endpoint.clone();
+            tokio::spawn(async move {
+                if richat {
+                    if let Err(e) = client.subscribe_slots_richat(slot_tx).await {
+                        error!("{} slot subscription failed: {}", endpoint, e);
+                    }
+                } else {
+                    if let Err(e) = client.subscribe_slots(slot_tx).await {
+                        error!("{} slot subscription failed: {}", endpoint, e);
+                    }
                 }
-            } else {
-                if let Err(e) = self.client.subscribe_slots(tx).await {
-                    error!("{} subscription failed: {}", endpoint.clone(), e);
+            })
+        };
+
+        // Spawn account collector if needed
+        let account_handle = if with_accounts {
+            let client = self.client.clone();
+            let endpoint = endpoint.clone();
+            Some(tokio::spawn(async move {
+                if richat {
+                    if let Err(e) = client.subscribe_accounts_richat(account_tx).await {
+                        error!("{} account subscription failed: {}", endpoint, e);
+                    }
+                } else {
+                    if let Err(e) = client.subscribe_accounts(account_tx).await {
+                        error!("{} account subscription failed: {}", endpoint, e);
+                    }
                 }
-            }
-        });
+            }))
+        } else {
+            None
+        };
 
         let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
-
-        // Pre-allocate HashSet with expected capacity
         let pre_allocate_capacity =
             EndpointData::calculate_capacity(self.target_slots, self.buffer_percent);
         let mut seen_slots = HashSet::with_capacity(pre_allocate_capacity);
 
         let mut last_logged_percent = 0;
-        while let Some(update) = rx.recv().await {
-            // Track unique slots
-            seen_slots.insert(update.slot);
+        
+        // Collect until we have enough slots
+        loop {
+            tokio::select! {
+                Some(update) = slot_rx.recv() => {
+                    seen_slots.insert(update.slot);
+                    self.endpoint_data.updates.push(update);
 
-            self.endpoint_data.updates.push(update);
+                    let percent = (seen_slots.len() as f32 / slots_and_buffer * 100.0).floor() as u32;
+                    if percent >= last_logged_percent + 10 {
+                        info!(
+                            "{}: {:.0}% of slots seen ({} unique slots)",
+                            self.endpoint_data.endpoint,
+                            percent,
+                            seen_slots.len()
+                        );
+                        last_logged_percent = percent;
+                    }
 
-            let percent = (seen_slots.len() as f32 / slots_and_buffer * 100.0).floor() as u32;
-            if percent >= last_logged_percent + 10 {
-                info!(
-                    "{}: {:.0}% of slots seen ({} unique slots)",
-                    self.endpoint_data.endpoint,
-                    percent,
-                    seen_slots.len()
-                );
-                last_logged_percent = percent;
-            }
-
-            // Check if we've collected enough unique slots
-            if seen_slots.len() >= slots_and_buffer as usize {
-                break;
+                    if seen_slots.len() >= slots_and_buffer as usize {
+                        break;
+                    }
+                }
+                Some(account) = account_rx.recv() => {
+                    self.endpoint_data.account_updates.push(account);
+                }
+                else => break,
             }
         }
 
-        handle.abort();
+        slot_handle.abort();
+        if let Some(handle) = account_handle {
+            handle.abort();
+        }
+        
         info!(
-            "{}: {} updates, {} unique slots",
+            "{}: {} slot updates, {} unique slots, {} account updates",
             self.endpoint_data.endpoint,
             self.endpoint_data.updates.len(),
-            seen_slots.len()
+            seen_slots.len(),
+            self.endpoint_data.account_updates.len()
         );
 
         Ok(self.endpoint_data)

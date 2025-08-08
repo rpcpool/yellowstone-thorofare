@@ -51,9 +51,9 @@ struct Args {
     #[clap(long, default_value = "info")]
     log_level: String,
 
-    /// With Load (subscribe to Raydium AMMV4 Program Account updates)
+    /// Collect all account updates for comparison
     #[clap(long)]
-    with_load: bool,
+    with_accounts: bool,
 }
 
 #[tokio::main]
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     };
 
     info!("Starting Yellowstone-Thorofare v{}", VERSION);
-    info!("With Load: {}", args.with_load);
+    info!("With Accounts: {}", args.with_accounts);
     info!("Endpoint 1: {} ({})", args.endpoint1, if args.endpoint1_richat { "Richat" } else { "Yellowstone" });
     info!("Endpoint 2: {} ({})", args.endpoint2, if args.endpoint2_richat { "Richat" } else { "Yellowstone" });
     info!("Target slots: {}", args.slots);
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
         args.endpoint1_richat,
         args.endpoint2_richat,
         args.slots,
-        args.with_load,
+        args.with_accounts,
     );
 
     info!("Starting data collection...");
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
 
             let result = Processor::process(
                 VERSION.to_string(),
-                args.with_load,
+                args.with_accounts,
                 grpc_config_summary,
                 data1,
                 data2,
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
             // Print summary
             info!("\n=== BENCHMARK SUMMARY ===");
             info!("Tool version: {}", VERSION);
-            info!("Load testing: {}", args.with_load);
+            info!("With Accounts: {}", args.with_accounts);
             info!(
                 "Total slots collected: {}",
                 result.metadata.total_slots_collected
