@@ -50,6 +50,7 @@ pub struct EndpointInfo {
     pub total_updates: u64,
     pub unique_slots: u64,
     pub account_updates: Option<u64>,
+    pub slots_with_fewer_acc_updates: Option<u64>, // Slots with fewer account updates than the other endpoint
 }
 
 #[derive(Debug, Serialize)]
@@ -109,10 +110,11 @@ pub struct AccountUpdateDetail {
     pub write_version: u64,
     pub tx_signature: String,
     pub delay_ms: Option<f64>,  // Delay vs other endpoint if matched
+    pub timestamp: u64,         // Timestamp in milliseconds since epoch
 }
 
 type SlotKey = (u64, SlotStatus);
-type AccountKey = (u64, String, u64, String); // (slot, pubkey, write_version, signature)
+type AccountKey = (u64, String, String); // (slot, pubkey, signature)
 
 pub struct EndpointMetadata {
     pub plugin_type: String,
@@ -142,6 +144,9 @@ impl Processor {
             .unwrap()
             .as_millis() as u64
             - duration_ms;
+
+        let mut endpoint1_fewer_updates = 0u64;
+        let mut endpoint2_fewer_updates = 0u64;
 
         // Get unique slots from each endpoint
         let endpoint1_updates = data1.updates.len() as u64;
@@ -246,10 +251,34 @@ impl Processor {
                 let count1 = accounts1_by_slot.get(&slot).map(|v| v.len()).unwrap_or(0);
                 let count2 = accounts2_by_slot.get(&slot).map(|v| v.len()).unwrap_or(0);
                 
+                // Check for mismatched update counts per account in this slot
+                let mut has_mismatch = false;
+                for ((s, _pk, _sig), (vec1, vec2)) in &account_match_map {
+                    if *s == slot && vec1.len() != vec2.len() {
+                        has_mismatch = true;
+                        // Track which endpoint has fewer
+                        if vec1.len() < vec2.len() {
+                            endpoint1_fewer_updates += 1;
+                        } else {
+                            endpoint2_fewer_updates += 1;
+                        }
+                        break;
+                    }
+                }
+                
+                if has_mismatch {
+                    dropped_slots += 1;
+                    continue;  // Skip this slot - unfair comparison
+                }
+                
                 if count1 > 0 && count2 > 0 {
                     let ratio = count1.min(count2) as f64 / count1.max(count2) as f64;
                     if ratio < Self::MIN_ACCOUNT_RATIO {
-                        // One endpoint has significantly fewer updates, skip
+                        if count1 < count2 {
+                            endpoint1_fewer_updates += 1;
+                        } else {
+                            endpoint2_fewer_updates += 1;
+                        }
                         dropped_slots += 1;
                         continue;
                     }
@@ -390,6 +419,7 @@ impl Processor {
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
                     account_updates: if with_accounts { Some(endpoint1_account_updates) } else { None },
+                    slots_with_fewer_acc_updates: if with_accounts { Some(endpoint1_fewer_updates) } else { None },
                 },
                 EndpointInfo {
                     endpoint: data2.endpoint,
@@ -399,6 +429,7 @@ impl Processor {
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,
                     account_updates: if with_accounts { Some(endpoint2_account_updates) } else { None },
+                    slots_with_fewer_acc_updates: if with_accounts { Some(endpoint2_fewer_updates) } else { None },
                 },
             ],
             endpoint1_summary: EndpointSummary {
@@ -438,32 +469,45 @@ impl Processor {
     }
 
     // Build map to match account updates between endpoints
+    // Key: (slot, pubkey, signature) - identifies unique account update in a transaction
+    // Value: (endpoint1_updates, endpoint2_updates) where each is Vec<(write_version, instant)>
+    // 
+    // Multiple updates can occur for same account in one transaction (different write_versions).
+    // We sort by write_version to match first-to-first, second-to-second, etc.
+    // This handles the case where an account is updated multiple times in a single transaction.
     fn build_account_match_map(
         updates1: &[AccountUpdate],
         updates2: &[AccountUpdate],
-    ) -> HashMap<AccountKey, (Option<Instant>, Option<Instant>)> {
+    ) -> HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)> {
         let mut map = HashMap::new();
         
-        // Add all updates from endpoint1
+        // Group by (slot, pubkey, signature) and keep all write_versions
         for update in updates1 {
             let key = (
                 update.slot,
                 update.pubkey.to_string(),
-                update.write_version,
                 update.tx_signature.to_string(),
             );
-            map.entry(key).or_insert((None, None)).0 = Some(update.instant);
+            map.entry(key)
+                .or_insert((Vec::new(), Vec::new()))
+                .0.push((update.write_version, update.instant));
         }
         
-        // Add all updates from endpoint2
         for update in updates2 {
             let key = (
                 update.slot,
                 update.pubkey.to_string(),
-                update.write_version,
                 update.tx_signature.to_string(),
             );
-            map.entry(key).or_insert((None, None)).1 = Some(update.instant);
+            map.entry(key)
+                .or_insert((Vec::new(), Vec::new()))
+                .1.push((update.write_version, update.instant));
+        }
+        
+        // Sort each vec by write_version to match first-to-first, second-to-second
+        for (_, (vec1, vec2)) in map.iter_mut() {
+            vec1.sort_by_key(|(wv, _)| *wv);
+            vec2.sort_by_key(|(wv, _)| *wv);
         }
         
         map
@@ -472,7 +516,7 @@ impl Processor {
     // Build account details for JSON output
     fn build_account_details(
         updates: Option<&Vec<AccountUpdate>>,
-        match_map: &HashMap<AccountKey, (Option<Instant>, Option<Instant>)>,
+        match_map: &HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)>,
         endpoint_num: usize,
     ) -> Vec<AccountUpdateDetail> {
         let mut details = Vec::new();
@@ -482,23 +526,25 @@ impl Processor {
                 let key = (
                     update.slot,
                     update.pubkey.to_string(),
-                    update.write_version,
                     update.tx_signature.to_string(),
                 );
                 
                 // Calculate delay if matched
-                let delay_ms = if let Some((instant1, instant2)) = match_map.get(&key) {
-                    match (instant1, instant2) {
-                        (Some(i1), Some(i2)) => {
+                // For matching: compare first occurrence (lowest write_version) between endpoints
+                let delay_ms = if let Some((vec1, vec2)) = match_map.get(&key) {
+                    // Both vecs are sorted by write_version already
+                    // Match first-to-first occurrence
+                    match (vec1.first(), vec2.first()) {
+                        (Some((_, instant1)), Some((_, instant2))) => {
                             if endpoint_num == 1 {
-                                if i1 > i2 {
-                                    Some(i1.duration_since(*i2).as_secs_f64() * 1000.0)
+                                if instant1 > instant2 {
+                                    Some(instant1.duration_since(*instant2).as_secs_f64() * 1000.0)
                                 } else {
                                     Some(0.0)
                                 }
                             } else {
-                                if i2 > i1 {
-                                    Some(i2.duration_since(*i1).as_secs_f64() * 1000.0)
+                                if instant2 > instant1 {
+                                    Some(instant2.duration_since(*instant1).as_secs_f64() * 1000.0)
                                 } else {
                                     Some(0.0)
                                 }
@@ -514,6 +560,7 @@ impl Processor {
                     pubkey: update.pubkey.to_string(),
                     write_version: update.write_version,
                     tx_signature: update.tx_signature.to_string(),
+                    timestamp: Self::to_timestamp_ms(update.system_time),
                     delay_ms,
                 });
             }

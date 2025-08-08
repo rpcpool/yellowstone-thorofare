@@ -20,6 +20,7 @@ pub struct AccountUpdate {
     pub write_version: u64,
     pub tx_signature: Signature,
     pub instant: Instant,
+    pub system_time: SystemTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -58,8 +59,8 @@ pub struct EndpointData {
 impl EndpointData {
     pub fn new(endpoint: String, slot_count: usize, buffer_percent: f32) -> Self {
         let capacity = Self::calculate_capacity(slot_count, buffer_percent);
-        let account_capacity = capacity * 500_000;
-        
+        let account_capacity = capacity * 350_000;
+
         Self {
             updates: Vec::with_capacity(capacity),
             account_updates: Vec::with_capacity(account_capacity),

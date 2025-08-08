@@ -150,6 +150,7 @@ impl GrpcClient {
                     write_version: account.account.as_ref().map(|a| a.write_version).unwrap_or(0),
                     tx_signature,
                     instant: Instant::now(),
+                    system_time: SystemTime::now(),
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -230,6 +231,7 @@ impl GrpcClient {
                     write_version: account.account.as_ref().map(|a| a.write_version).unwrap_or(0),
                     tx_signature,
                     instant: Instant::now(),
+                    system_time: SystemTime::now(),
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
