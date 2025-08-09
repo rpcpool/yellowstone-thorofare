@@ -22,6 +22,26 @@ pub struct AccountUpdate {
     pub instant: Instant,
     pub system_time: SystemTime,
 }
+#[derive(Debug, Clone)]
+pub struct BlockUpdate {
+    pub slot: u64,
+    pub transactions: Vec<TransactionUpdate>,
+    pub updated_account_count: u64,
+    pub entries: Vec<EntryUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionUpdate {
+    pub signature: Signature,
+    pub index: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryUpdate {
+    pub slot: u64,
+    pub index: u64,
+    pub starting_transaction_index: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

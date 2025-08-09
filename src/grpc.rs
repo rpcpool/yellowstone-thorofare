@@ -1,11 +1,11 @@
 use {
     crate::{
         richat::{richat_client_from_config, RichatSubscriber}, 
-        types::{SlotStatus, SlotUpdate, AccountUpdate}, 
+        types::{AccountUpdate, BlockUpdate, EntryUpdate, SlotStatus, SlotUpdate, TransactionUpdate}, 
         EndpointData
     }, 
     futures::StreamExt, 
-    richat_proto::richat::RichatFilter, 
+    richat_proto::{geyser::SubscribeRequestFilterBlocks, richat::RichatFilter}, 
     solana_pubkey::Pubkey,
     solana_signature::Signature,
     std::{
@@ -160,6 +160,63 @@ impl GrpcClient {
         Ok(())
     }
 
+    pub async fn subscribe_blocks(&self, tx: mpsc::UnboundedSender<BlockUpdate>) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = SubscribeRequest {
+            blocks: [(
+                "".to_string(),
+                SubscribeRequestFilterBlocks {
+                    account_include: vec![],
+                    include_accounts: Some(false),
+                    include_entries: Some(true),
+                    include_transactions: Some(true)
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let mut stream = client
+            .subscribe_once(request)
+            .await
+            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+
+            if let Some(UpdateOneof::Block(block)) = msg.update_oneof {
+                let transactions = block.transactions.into_iter()
+                    .map(|tx| TransactionUpdate {
+                        signature: Signature::try_from(tx.signature.as_slice()).unwrap_or_default(),
+                        index: tx.index,
+                    })
+                    .collect();
+
+                let entries = block.entries.into_iter()
+                    .map(|entry| EntryUpdate {
+                        slot: entry.slot,
+                        index: entry.index,
+                        starting_transaction_index: entry.starting_transaction_index,
+                    })
+                    .collect();
+
+                let update = BlockUpdate {
+                    slot: block.slot,
+                    transactions,
+                    updated_account_count: block.updated_account_count,
+                    entries,
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+                    
+
     pub async fn subscribe_slots_richat(
         &self,
         tx: mpsc::UnboundedSender<SlotUpdate>,
@@ -232,6 +289,57 @@ impl GrpcClient {
                     tx_signature,
                     instant: Instant::now(),
                     system_time: SystemTime::now(),
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe_blocks_richat(
+        &self,
+        tx: mpsc::UnboundedSender<BlockUpdate>,
+    ) -> Result<()> {
+        let request = richat_proto::richat::GrpcSubscribeRequest {
+            filter: Some(RichatFilter {
+                disable_accounts: true,  // Only want blocks
+                disable_entries: false,
+                disable_transactions: false,
+            }),
+            ..Default::default()
+        };
+        
+        let mut stream = RichatSubscriber::spawn_from_config(
+            request,
+            self.config.clone()
+        ).await.map_err(|e| GrpcError::ConnectionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            
+            if let Some(UpdateOneof::Block(block)) = msg.update_oneof {
+                let transactions = block.transactions.into_iter()
+                    .map(|tx| TransactionUpdate {
+                        signature: Signature::try_from(tx.signature.as_slice()).unwrap_or_default(),
+                        index: tx.index,
+                    })
+                    .collect();
+
+                let entries = block.entries.into_iter()
+                    .map(|entry| EntryUpdate {
+                        slot: entry.slot,
+                        index: entry.index,
+                        starting_transaction_index: entry.starting_transaction_index,
+                    })
+                    .collect();
+
+                let update = BlockUpdate {
+                    slot: block.slot,
+                    transactions,
+                    updated_account_count: block.updated_account_count,
+                    entries,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
