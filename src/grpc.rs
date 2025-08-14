@@ -5,7 +5,7 @@ use {
         EndpointData
     }, 
     futures::StreamExt, 
-    richat_proto::{geyser::SubscribeRequestFilterBlocks, richat::RichatFilter}, 
+    richat_proto::{geyser::{SubscribeRequestFilterBlocks, SubscribeRequestFilterEntry}, richat::RichatFilter}, 
     solana_pubkey::Pubkey,
     solana_signature::Signature,
     std::{
@@ -64,15 +64,16 @@ pub struct GrpcConfig {
 pub struct GrpcClient {
     config: GrpcConfig,
     with_accounts: bool,
+    with_entries: bool,
 }
 
 impl GrpcClient {
-    pub fn new(config: GrpcConfig, with_accounts: bool) -> Result<Self> {
+    pub fn new(config: GrpcConfig, with_accounts: bool, with_entries: bool) -> Result<Self> {
         if config.endpoint.is_empty() {
             return Err(GrpcError::InvalidConfig("Empty endpoint".into()));
         }
 
-        Ok(Self { config, with_accounts })
+        Ok(Self { config, with_accounts, with_entries })
     }
 
     pub async fn subscribe_slots(&self, tx: mpsc::UnboundedSender<SlotUpdate>) -> Result<()> {
@@ -124,6 +125,7 @@ impl GrpcClient {
             )]
             .into_iter()
             .collect(),
+            commitment: Some(0), // Processed
             ..Default::default()
         };
 
@@ -160,6 +162,44 @@ impl GrpcClient {
         Ok(())
     }
 
+    pub async fn subscribe_entries(&self, tx: mpsc::UnboundedSender<EntryUpdate>) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = SubscribeRequest {
+            entry: [(
+                "".to_string(),
+                SubscribeRequestFilterEntry::default(),
+            )]
+            .into_iter()
+            .collect(),
+            commitment: Some(0), // Processed
+            ..Default::default()
+        };
+
+        let mut stream = client
+            .subscribe_once(request)
+            .await
+            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+
+            if let Some(UpdateOneof::Entry(entry)) = msg.update_oneof {
+                let update = EntryUpdate {
+                    slot: entry.slot,
+                    index: entry.index,
+                    starting_transaction_index: entry.starting_transaction_index,
+                    instant: Instant::now(),
+                    system_time: SystemTime::now(),
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn subscribe_blocks(&self, tx: mpsc::UnboundedSender<BlockUpdate>) -> Result<()> {
         let mut client = self.connect().await?;
 
@@ -175,6 +215,7 @@ impl GrpcClient {
             )]
             .into_iter()
             .collect(),
+            commitment: Some(0), // Processed
             ..Default::default()
         };
 
@@ -199,6 +240,8 @@ impl GrpcClient {
                         slot: entry.slot,
                         index: entry.index,
                         starting_transaction_index: entry.starting_transaction_index,
+                        instant: Instant::now(),
+                        system_time: SystemTime::now(),
                     })
                     .collect();
 
@@ -272,7 +315,7 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
-            
+
             if let Some(UpdateOneof::Account(account)) = msg.update_oneof {
                 let pubkey = Pubkey::try_from(account.account.as_ref().map(|a| a.pubkey.as_slice()).unwrap_or_default())
                     .unwrap_or_default();
@@ -303,11 +346,7 @@ impl GrpcClient {
         tx: mpsc::UnboundedSender<BlockUpdate>,
     ) -> Result<()> {
         let request = richat_proto::richat::GrpcSubscribeRequest {
-            filter: Some(RichatFilter {
-                disable_accounts: true,  // Only want blocks
-                disable_entries: false,
-                disable_transactions: false,
-            }),
+            filter: None,
             ..Default::default()
         };
         
@@ -332,6 +371,8 @@ impl GrpcClient {
                         slot: entry.slot,
                         index: entry.index,
                         starting_transaction_index: entry.starting_transaction_index,
+                        instant: Instant::now(),
+                        system_time: SystemTime::now(),
                     })
                     .collect();
 
@@ -340,6 +381,39 @@ impl GrpcClient {
                     transactions,
                     updated_account_count: block.updated_account_count,
                     entries,
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe_entries_richat(
+        &self,
+        tx: mpsc::UnboundedSender<EntryUpdate>,
+    ) -> Result<()> {
+        let request = richat_proto::richat::GrpcSubscribeRequest {
+            filter: None,
+            ..Default::default()
+        };
+
+        let mut stream = RichatSubscriber::spawn_from_config(
+            request,
+            self.config.clone()
+        ).await.map_err(|e| GrpcError::ConnectionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+
+            if let Some(UpdateOneof::Entry(entry)) = msg.update_oneof {
+                let update = EntryUpdate {
+                    slot: entry.slot,
+                    index: entry.index,
+                    starting_transaction_index: entry.starting_transaction_index,
+                    instant: Instant::now(),
+                    system_time: SystemTime::now(),
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -480,10 +554,11 @@ impl SlotCollector {
         buffer_percent: f32,
         latency_samples: usize,
         with_accounts: bool,
+        with_entries: bool,
         richat: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
-        let client = GrpcClient::new(config, with_accounts)?;
+        let client = GrpcClient::new(config, with_accounts, with_entries)?;
 
         // Get version first
         let version = if richat {
@@ -530,10 +605,13 @@ impl SlotCollector {
     pub async fn collect(mut self) -> Result<EndpointData> {
         let (slot_tx, mut slot_rx) = mpsc::unbounded_channel();
         let (account_tx, mut account_rx) = mpsc::unbounded_channel();
+        let (block_tx, mut block_rx) = mpsc::unbounded_channel();
+        let (entries_tx, mut entries_rx) = mpsc::unbounded_channel();
 
         let endpoint = self.endpoint_data.endpoint.clone();
         let richat = self.richat;
         let with_accounts = self.client.with_accounts;
+        let with_entries = self.client.with_entries;
 
         // Spawn slot collector
         let slot_handle = {
@@ -571,6 +649,44 @@ impl SlotCollector {
             None
         };
 
+        // Spawn block collector if needed  (if --with-accounts)
+        let block_handle = if with_accounts {
+            let client = self.client.clone();
+            let endpoint = endpoint.clone();
+            Some(tokio::spawn(async move {
+                if richat {
+                    if let Err(e) = client.subscribe_blocks_richat(block_tx).await {
+                        error!("{} block subscription failed: {}", endpoint, e);
+                    }
+                } else {
+                    if let Err(e) = client.subscribe_blocks(block_tx).await {
+                        error!("{} block subscription failed: {}", endpoint, e);
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
+        let entries_handle = if with_entries {
+            let client = self.client.clone();
+            let endpoint = endpoint.clone();
+            Some(tokio::spawn(async move {
+                if richat {
+                    if let Err(e) = client.subscribe_entries_richat(entries_tx).await {
+                        error!("{} entry subscription failed: {}", endpoint, e);
+                    }
+                } else {
+                    if let Err(e) = client.subscribe_entries(entries_tx).await {
+                        error!("{} entry subscription failed: {}", endpoint, e);
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+    
+
         let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
         let pre_allocate_capacity =
             EndpointData::calculate_capacity(self.target_slots, self.buffer_percent);
@@ -603,6 +719,12 @@ impl SlotCollector {
                 Some(account) = account_rx.recv() => {
                     self.endpoint_data.account_updates.push(account);
                 }
+                Some(block) = block_rx.recv() => {
+                    self.endpoint_data.block_updates.push(block);
+                }
+                Some(entry) = entries_rx.recv() => {
+                    self.endpoint_data.entry_updates.push(entry);
+                }
                 else => break,
             }
         }
@@ -611,13 +733,21 @@ impl SlotCollector {
         if let Some(handle) = account_handle {
             handle.abort();
         }
+        if let Some(handle) = block_handle {
+            handle.abort();
+        }
+        if let Some(handle) = entries_handle {
+            handle.abort();
+        }
         
         info!(
-            "{}: {} slot updates, {} unique slots, {} account updates",
+            "{}: {} slot updates, {} unique slots, {} account updates, {} block updates, {} entry updates",
             self.endpoint_data.endpoint,
             self.endpoint_data.updates.len(),
             seen_slots.len(),
-            self.endpoint_data.account_updates.len()
+            self.endpoint_data.account_updates.len(),
+            self.endpoint_data.block_updates.len(),
+            self.endpoint_data.entry_updates.len()
         );
 
         Ok(self.endpoint_data)

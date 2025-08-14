@@ -30,6 +30,7 @@ pub struct Collector {
     x_token2: Option<String>,
     slot_count: usize,
     with_accounts: bool,
+    with_entries: bool,
     endpoint1_richat: bool,
     endpoint2_richat: bool,
 }
@@ -45,6 +46,7 @@ impl Collector {
         endpoint2_richat: bool,
         slot_count: usize,
         with_accounts: bool,
+        with_entries: bool,
     ) -> Self {
         Self {
             config,
@@ -56,6 +58,7 @@ impl Collector {
             with_accounts,
             endpoint1_richat,
             endpoint2_richat,
+            with_entries,
         }
     }
 
@@ -71,6 +74,7 @@ impl Collector {
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
             self.with_accounts,
+            self.with_entries,
             self.endpoint1_richat,
         )
         .await?;
@@ -81,6 +85,7 @@ impl Collector {
             self.config.benchmark.buffer_percentage,
             self.config.benchmark.latency_samples,
             self.with_accounts,
+            self.with_entries,
             self.endpoint2_richat,
         )
         .await?;

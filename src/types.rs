@@ -41,6 +41,8 @@ pub struct EntryUpdate {
     pub slot: u64,
     pub index: u64,
     pub starting_transaction_index: u64,
+    pub instant: Instant,
+    pub system_time: SystemTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -73,6 +75,8 @@ impl From<i32> for SlotStatus {
 pub struct EndpointData {
     pub updates: Vec<SlotUpdate>,
     pub account_updates: Vec<AccountUpdate>,
+    pub block_updates: Vec<BlockUpdate>,
+    pub entry_updates: Vec<EntryUpdate>,
     pub endpoint: String,
 }
 
@@ -80,10 +84,13 @@ impl EndpointData {
     pub fn new(endpoint: String, slot_count: usize, buffer_percent: f32) -> Self {
         let capacity = Self::calculate_capacity(slot_count, buffer_percent);
         let account_capacity = capacity * 350_000;
+        let entries_capacity = capacity * 1000;
 
         Self {
             updates: Vec::with_capacity(capacity),
             account_updates: Vec::with_capacity(account_capacity),
+            block_updates: Vec::with_capacity(capacity),
+            entry_updates: Vec::with_capacity(entries_capacity),
             endpoint,
         }
     }

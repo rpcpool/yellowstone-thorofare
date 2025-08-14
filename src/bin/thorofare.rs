@@ -54,6 +54,10 @@ struct Args {
     /// Collect all account updates for comparison
     #[clap(long)]
     with_accounts: bool,
+
+    /// Collect all entry updates for comparison
+    #[clap(short, long)]
+    with_entries: bool,
 }
 
 #[tokio::main]
@@ -105,6 +109,7 @@ async fn main() -> Result<()> {
         args.endpoint2_richat,
         args.slots,
         args.with_accounts,
+        args.with_entries,
     );
 
     info!("Starting data collection...");

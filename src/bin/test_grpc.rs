@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     };
 
     info!("Connecting to {}", args.endpoint);
-    let client = GrpcClient::new(config, false)?;
+    let client = GrpcClient::new(config, false, false)?;
 
     match args.mode.as_str() {
         "ping" => {
