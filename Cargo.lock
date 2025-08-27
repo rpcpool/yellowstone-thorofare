@@ -6342,9 +6342,8 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-thorofare"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
  "clap",
  "futures",
  "humantime-serde",
@@ -6352,6 +6351,8 @@ dependencies = [
  "richat-proto",
  "serde",
  "serde_json",
+ "solana-pubkey",
+ "solana-signature",
  "thiserror 2.0.12",
  "tokio",
  "toml 0.8.23",

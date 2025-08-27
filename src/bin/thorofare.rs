@@ -1,7 +1,7 @@
 use {
-    anyhow::Result,
     clap::Parser,
-    std::{fs, time::Instant},
+    solana_pubkey::Pubkey,
+    std::{fs, str::FromStr, time::Instant},
     tracing::{error, info},
     yellowstone_thorofare::{Collector, Config, Processor},
 };
@@ -36,11 +36,11 @@ struct Args {
     endpoint2_richat: bool,
 
     /// Number of slots to collect
-    #[clap(long, default_value = "1000")]
+    #[clap(short, long, default_value = "1000")]
     slots: usize,
 
     /// Config file path
-    #[clap(long, default_value = "config.toml")]
+    #[clap(short, long, default_value = "config.toml")]
     config: String,
 
     /// Output JSON file
@@ -51,13 +51,17 @@ struct Args {
     #[clap(long, default_value = "info")]
     log_level: String,
 
-    /// With Load (subscribe to Raydium AMMV4 Program Account updates)
+    /// Collect all account updates for comparison
     #[clap(long)]
-    with_load: bool,
+    with_accounts: bool,
+
+    /// Filter accounts by owner pubkey (optional, requires --with-accounts)
+    #[clap(long)]
+    account_owner: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let args = Args::parse();
 
     // Setup tracing
@@ -87,9 +91,39 @@ async fn main() -> Result<()> {
     };
 
     info!("Starting Yellowstone-Thorofare v{}", VERSION);
-    info!("With Load: {}", args.with_load);
-    info!("Endpoint 1: {} ({})", args.endpoint1, if args.endpoint1_richat { "Richat" } else { "Yellowstone" });
-    info!("Endpoint 2: {} ({})", args.endpoint2, if args.endpoint2_richat { "Richat" } else { "Yellowstone" });
+    info!("With Accounts: {}", args.with_accounts);
+    // Verify if either --with-account or --account-owner is activated so both need to be passed
+    if args.account_owner.is_some() && !args.with_accounts
+        || args.with_accounts && args.account_owner.is_none()
+    {
+        panic!("--with-accounts and --account-owner must be used together");
+    }
+
+    if let Some(ref owner) = args.account_owner {
+        // Verify if it's a valid pubkey
+        if Pubkey::from_str(owner).is_err() {
+            panic!("Invalid account owner pubkey: {}", owner);
+        }
+        info!("Account Owner Filter: {}", owner);
+    }
+    info!(
+        "Endpoint 1: {} ({})",
+        args.endpoint1,
+        if args.endpoint1_richat {
+            "Richat"
+        } else {
+            "Yellowstone"
+        }
+    );
+    info!(
+        "Endpoint 2: {} ({})",
+        args.endpoint2,
+        if args.endpoint2_richat {
+            "Richat"
+        } else {
+            "Yellowstone"
+        }
+    );
     info!("Target slots: {}", args.slots);
 
     // Start benchmark
@@ -104,7 +138,8 @@ async fn main() -> Result<()> {
         args.endpoint1_richat,
         args.endpoint2_richat,
         args.slots,
-        args.with_load,
+        args.with_accounts,
+        args.account_owner.clone(),
     );
 
     info!("Starting data collection...");
@@ -117,7 +152,8 @@ async fn main() -> Result<()> {
 
             let result = Processor::process(
                 VERSION.to_string(),
-                args.with_load,
+                args.with_accounts,
+                args.account_owner,
                 grpc_config_summary,
                 data1,
                 data2,
@@ -129,15 +165,15 @@ async fn main() -> Result<()> {
             );
 
             // Save to JSON
-            let json = serde_json::to_string_pretty(&result)?;
-            fs::write(&args.output, json)?;
+            let json = serde_json::to_string_pretty(&result).expect("Failed to serialize result");
+            fs::write(&args.output, json).expect("Unable to write output file");
 
             info!("Results saved to {}", args.output);
 
             // Print summary
             info!("\n=== BENCHMARK SUMMARY ===");
             info!("Tool version: {}", VERSION);
-            info!("Load testing: {}", args.with_load);
+            info!("With Accounts: {}", args.with_accounts);
             info!(
                 "Total slots collected: {}",
                 result.metadata.total_slots_collected
@@ -149,7 +185,7 @@ async fn main() -> Result<()> {
 
             info!(
                 "\nEndpoint 1: {} ({} v{}) (ping: {:.2}ms)",
-                result.endpoints[0].endpoint, 
+                result.endpoints[0].endpoint,
                 result.endpoints[0].plugin_type,
                 result.endpoints[0].plugin_version,
                 result.endpoints[0].avg_ping_ms
@@ -160,7 +196,7 @@ async fn main() -> Result<()> {
             info!(
                 "\nEndpoint 2: {} ({} v{}) (ping: {:.2}ms)",
                 result.endpoints[1].endpoint,
-                result.endpoints[1].plugin_type, 
+                result.endpoints[1].plugin_type,
                 result.endpoints[1].plugin_version,
                 result.endpoints[1].avg_ping_ms
             );
@@ -216,6 +252,12 @@ async fn main() -> Result<()> {
                 result.endpoint1_summary.finalization_time.p90,
                 result.endpoint1_summary.finalization_time.p99
             );
+            info!(
+                "Account Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p50).unwrap_or(0.0),
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p90).unwrap_or(0.0),
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p99).unwrap_or(0.0)
+            );
 
             info!("\n=== ENDPOINT 2 PERFORMANCE (ms) ===");
             info!(
@@ -229,6 +271,18 @@ async fn main() -> Result<()> {
                 result.endpoint2_summary.processing_delay.p50,
                 result.endpoint2_summary.processing_delay.p90,
                 result.endpoint2_summary.processing_delay.p99
+            );
+            info!(
+                "Confirmation Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.confirmation_delay.p50,
+                result.endpoint2_summary.confirmation_delay.p90,
+                result.endpoint2_summary.confirmation_delay.p99
+            );
+            info!(
+                "Finalization Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.finalization_delay.p50,
+                result.endpoint2_summary.finalization_delay.p90,
+                result.endpoint2_summary.finalization_delay.p99
             );
             info!(
                 "Download Time: p50={:.2}, p90={:.2}, p99={:.2}",
@@ -254,12 +308,16 @@ async fn main() -> Result<()> {
                 result.endpoint2_summary.finalization_time.p90,
                 result.endpoint2_summary.finalization_time.p99
             );
+            info!(
+                "Account Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p50).unwrap_or(0.0),
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p90).unwrap_or(0.0),
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p99).unwrap_or(0.0)
+            );
         }
         Err(e) => {
             error!("Benchmark failed: {}", e);
             std::process::exit(1);
         }
     }
-
-    Ok(())
 }

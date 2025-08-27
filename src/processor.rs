@@ -1,5 +1,5 @@
 use {
-    crate::types::{EndpointData, SlotStatus, SlotUpdate},
+    crate::types::{AccountUpdate, EndpointData, SlotStatus, SlotUpdate},
     serde::Serialize,
     std::{
         collections::{HashMap, HashSet},
@@ -9,8 +9,9 @@ use {
 
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
-    pub version: String,           // Yellowstone Thorofare version
-    pub with_load: bool,          // Whether --with-load was used
+    pub version: String,                // Yellowstone Thorofare version
+    pub with_accounts: bool,            // Whether --with-accounts was used
+    pub account_owner: Option<String>,  // The account owner pubkey filter (if specified)
     pub grpc_config: GrpcConfigSummary, // gRPC config settings
     pub metadata: Metadata,
     pub endpoints: [EndpointInfo; 2],
@@ -32,22 +33,24 @@ pub struct GrpcConfigSummary {
 
 #[derive(Debug, Serialize)]
 pub struct Metadata {
-    pub total_slots_collected: u64, 
-    pub common_slots: u64,          
-    pub compared_slots: u64,        
-    pub dropped_slots: u64,         
+    pub total_slots_collected: u64,
+    pub common_slots: u64,
+    pub compared_slots: u64,
+    pub dropped_slots: u64,
     pub duration_ms: u64,
     pub benchmark_start_time: u64,
+    pub total_account_updates: Option<(u64, u64)>, // (endpoint1, endpoint2)
 }
 
 #[derive(Debug, Serialize)]
 pub struct EndpointInfo {
     pub endpoint: String,
-    pub plugin_type: String,    // "Yellowstone" or "Richat"
+    pub plugin_type: String, // "Yellowstone" or "Richat"
     pub plugin_version: String,
     pub avg_ping_ms: f64,
     pub total_updates: u64,
     pub unique_slots: u64,
+    pub account_updates: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +63,7 @@ pub struct EndpointSummary {
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
     pub finalization_time: Percentiles,
+    pub account_delay: Option<Percentiles>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +88,7 @@ pub struct SlotDetail {
     pub finalization_delay_ms: Option<f64>,
     pub transitions: Vec<Transition>,
     pub durations: StageDurations,
+    pub account_updates: Vec<AccountUpdateDetail>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,7 +105,17 @@ pub struct StageDurations {
     pub finalization_ms: f64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AccountUpdateDetail {
+    pub pubkey: String,
+    pub write_version: u64,
+    pub tx_signature: String,
+    pub delay_ms: Option<f64>, // Delay vs other endpoint if matched
+    pub timestamp: u64,        // Timestamp in milliseconds since epoch
+}
+
 type SlotKey = (u64, SlotStatus);
+type AccountKey = (u64, String, String); // (slot, pubkey, signature)
 
 pub struct EndpointMetadata {
     pub plugin_type: String,
@@ -112,7 +127,8 @@ pub struct Processor;
 impl Processor {
     pub fn process(
         version: String,
-        with_load: bool,
+        with_accounts: bool,
+        account_owner: Option<String>,
         grpc_config: GrpcConfigSummary,
         data1: EndpointData,
         data2: EndpointData,
@@ -133,9 +149,24 @@ impl Processor {
         let endpoint1_updates = data1.updates.len() as u64;
         let endpoint2_updates = data2.updates.len() as u64;
 
+        // Account updates counts
+        let endpoint1_account_updates = data1.account_updates.len() as u64;
+        let endpoint2_account_updates = data2.account_updates.len() as u64;
+
         // Build lookup maps
         let map1 = Self::build_map(data1.updates);
         let map2 = Self::build_map(data2.updates);
+
+        // Build account maps if we have account data
+        let (accounts1_by_slot, accounts2_by_slot, account_match_map) = if with_accounts {
+            let accounts1 = Self::group_accounts_by_slot(&data1.account_updates);
+            let accounts2 = Self::group_accounts_by_slot(&data2.account_updates);
+            let matches =
+                Self::build_account_match_map(&data1.account_updates, &data2.account_updates);
+            (accounts1, accounts2, matches)
+        } else {
+            (HashMap::new(), HashMap::new(), HashMap::new())
+        };
 
         // Count unique slots per endpoint
         let endpoint1_slots: HashSet<u64> = map1.keys().map(|(slot, _)| *slot).collect();
@@ -191,6 +222,10 @@ impl Processor {
         let mut endpoint2_confirmation_times = Vec::new();
         let mut endpoint2_finalization_times = Vec::new();
 
+        // Account update delay collections
+        let mut endpoint1_account_delays = Vec::new();
+        let mut endpoint2_account_delays = Vec::new();
+
         for slot in sorted_common_slots {
             // Check if slot is dead in either endpoint
             if map1.contains_key(&(slot, SlotStatus::Dead))
@@ -213,8 +248,27 @@ impl Processor {
                 continue;
             }
 
+            // Check if we have the same number of account updates so our benchmark is fair
+            if with_accounts {
+                let received1 = accounts1_by_slot
+                    .get(&slot)
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(0);
+                let received2 = accounts2_by_slot
+                    .get(&slot)
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(0);
+
+                // Skip slots where we don't have the same number of account updates.
+                if received1 != received2 {
+                    dropped_slots += 1;
+                    continue;
+                }
+            }
+
             // Calculate first shred delays
-            let (ep1_first_shred, ep2_first_shred) = Self::calc_first_shred_delays(&map1, &map2, slot);
+            let (ep1_first_shred, ep2_first_shred) =
+                Self::calc_first_shred_delays(&map1, &map2, slot);
 
             // Collect first shred delays
             if let Some(delay) = ep1_first_shred {
@@ -225,7 +279,8 @@ impl Processor {
             }
 
             // Calculate processing delays
-            let (ep1_processing_delay, ep2_processing_delay) = Self::calc_processing_delays(&map1, &map2, slot);
+            let (ep1_processing_delay, ep2_processing_delay) =
+                Self::calc_processing_delays(&map1, &map2, slot);
 
             // Collect processing delays
             if let Some(delay) = ep1_processing_delay {
@@ -236,7 +291,8 @@ impl Processor {
             }
 
             // Calculate confirmation delays
-            let (ep1_confirmation_delay, ep2_confirmation_delay) = Self::calc_confirmation_delays(&map1, &map2, slot);
+            let (ep1_confirmation_delay, ep2_confirmation_delay) =
+                Self::calc_confirmation_delays(&map1, &map2, slot);
 
             // Collect confirmation delays
             if let Some(delay) = ep1_confirmation_delay {
@@ -247,7 +303,8 @@ impl Processor {
             }
 
             // Calculate finalization delays
-            let (ep1_finalization_delay, ep2_finalization_delay) = Self::calc_finalization_delays(&map1, &map2, slot);
+            let (ep1_finalization_delay, ep2_finalization_delay) =
+                Self::calc_finalization_delays(&map1, &map2, slot);
 
             // Collect finalization delays
             if let Some(delay) = ep1_finalization_delay {
@@ -262,22 +319,60 @@ impl Processor {
             let mut endpoint2_detail = Self::build_slot_detail(&map2, slot);
 
             // Add first shred delays to slot details
-            endpoint1_detail.first_shred_delay_ms = ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.first_shred_delay_ms = ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.first_shred_delay_ms =
+                ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.first_shred_delay_ms =
+                ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add processing delays to slot details
-            endpoint1_detail.processing_delay_ms = ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.processing_delay_ms = ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.processing_delay_ms =
+                ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.processing_delay_ms =
+                ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add confirmation delays to slot details
-            endpoint1_detail.confirmation_delay_ms = ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.confirmation_delay_ms = ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.confirmation_delay_ms =
+                ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.confirmation_delay_ms =
+                ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add finalization delays to slot details
-            endpoint1_detail.finalization_delay_ms = ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.finalization_delay_ms = ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.finalization_delay_ms =
+                ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.finalization_delay_ms =
+                ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
 
-            // Collect metrics (we know these exist due to the check above)
+            // Add account updates to slot details
+            if with_accounts {
+                endpoint1_detail.account_updates = Self::build_account_details(
+                    accounts1_by_slot.get(&slot),
+                    &account_match_map,
+                    1, // endpoint 1
+                );
+                endpoint2_detail.account_updates = Self::build_account_details(
+                    accounts2_by_slot.get(&slot),
+                    &account_match_map,
+                    2, // endpoint 2
+                );
+                
+                // Collect account delays for percentile calculation 
+                for update in &endpoint1_detail.account_updates {
+                    if let Some(delay_ms) = update.delay_ms {
+                        if delay_ms > 0.0 {
+                            endpoint1_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                        }
+                    }
+                }
+                for update in &endpoint2_detail.account_updates {
+                    if let Some(delay_ms) = update.delay_ms {
+                        if delay_ms > 0.0 {
+                            endpoint2_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                        }
+                    }
+                }
+            }
+
+            // Collect metrics
             let d1 = Self::calc_download(&map1, slot).unwrap();
             let d2 = Self::calc_download(&map2, slot).unwrap();
             endpoint1_download_times.push(d1);
@@ -309,7 +404,8 @@ impl Processor {
 
         BenchmarkResult {
             version,
-            with_load,
+            with_accounts,
+            account_owner,
             grpc_config,
             metadata: Metadata {
                 total_slots_collected,
@@ -318,6 +414,11 @@ impl Processor {
                 dropped_slots,
                 duration_ms,
                 benchmark_start_time: benchmark_start,
+                total_account_updates: if with_accounts {
+                    Some((endpoint1_account_updates, endpoint2_account_updates))
+                } else {
+                    None
+                },
             },
             endpoints: [
                 EndpointInfo {
@@ -327,6 +428,11 @@ impl Processor {
                     avg_ping_ms: ping1.as_secs_f64() * 1000.0,
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
+                    account_updates: if with_accounts {
+                        Some(endpoint1_account_updates)
+                    } else {
+                        None
+                    },
                 },
                 EndpointInfo {
                     endpoint: data2.endpoint,
@@ -335,6 +441,11 @@ impl Processor {
                     avg_ping_ms: ping2.as_secs_f64() * 1000.0,
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,
+                    account_updates: if with_accounts {
+                        Some(endpoint2_account_updates)
+                    } else {
+                        None
+                    },
                 },
             ],
             endpoint1_summary: EndpointSummary {
@@ -346,6 +457,11 @@ impl Processor {
                 replay_time: Self::percentiles(endpoint1_replay_times),
                 confirmation_time: Self::percentiles(endpoint1_confirmation_times),
                 finalization_time: Self::percentiles(endpoint1_finalization_times),
+                account_delay: if with_accounts && !endpoint1_account_delays.is_empty() {
+                    Some(Self::percentiles(endpoint1_account_delays))
+                } else {
+                    None
+                },
             },
             endpoint2_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
@@ -356,9 +472,122 @@ impl Processor {
                 replay_time: Self::percentiles(endpoint2_replay_times),
                 confirmation_time: Self::percentiles(endpoint2_confirmation_times),
                 finalization_time: Self::percentiles(endpoint2_finalization_times),
+                account_delay: if with_accounts && !endpoint2_account_delays.is_empty() {
+                    Some(Self::percentiles(endpoint2_account_delays))
+                } else {
+                    None
+                },
             },
             slots: slot_comparisons,
         }
+    }
+
+    // Group account updates by slot
+    fn group_accounts_by_slot(updates: &[AccountUpdate]) -> HashMap<u64, Vec<AccountUpdate>> {
+        let mut by_slot = HashMap::new();
+        for update in updates {
+            by_slot
+                .entry(update.slot)
+                .or_insert_with(|| Vec::with_capacity(100))
+                .push(update.clone());
+        }
+        by_slot
+    }
+
+    // Build map to match account updates between endpoints
+    fn build_account_match_map(
+        updates1: &[AccountUpdate],
+        updates2: &[AccountUpdate],
+    ) -> HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)> {
+        let mut map = HashMap::new();
+
+        // Group by (slot, pubkey, signature) and keep all write_versions
+        for update in updates1 {
+            let key = (
+                update.slot,
+                update.pubkey.to_string(),
+                update.tx_signature.to_string(),
+            );
+            map.entry(key)
+                .or_insert((Vec::new(), Vec::new()))
+                .0
+                .push((update.write_version, update.instant));
+        }
+
+        for update in updates2 {
+            let key = (
+                update.slot,
+                update.pubkey.to_string(),
+                update.tx_signature.to_string(),
+            );
+            map.entry(key)
+                .or_insert((Vec::new(), Vec::new()))
+                .1
+                .push((update.write_version, update.instant));
+        }
+
+        // Sort each vec by write_version to match first-to-first, second-to-second
+        for (_, (vec1, vec2)) in map.iter_mut() {
+            vec1.sort_by_key(|(wv, _)| *wv);
+            vec2.sort_by_key(|(wv, _)| *wv);
+        }
+
+        map
+    }
+
+    // Build account details for JSON output
+    fn build_account_details(
+        updates: Option<&Vec<AccountUpdate>>,
+        match_map: &HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)>,
+        endpoint_num: usize,
+    ) -> Vec<AccountUpdateDetail> {
+        let mut details = Vec::new();
+
+        if let Some(updates) = updates {
+            for update in updates {
+                let key = (
+                    update.slot,
+                    update.pubkey.to_string(),
+                    update.tx_signature.to_string(),
+                );
+
+                // Calculate delay if matched
+                let delay_ms = if let Some((vec1, vec2)) = match_map.get(&key) {
+                    match (vec1.first(), vec2.first()) {
+                        (Some((_, instant1)), Some((_, instant2))) => {
+                            if endpoint_num == 1 {
+                                if instant1 < instant2 {
+                                    Some(0.0)
+                                } else {
+                                    Some(instant1.duration_since(*instant2).as_secs_f64() * 1000.0)
+                                }
+                            } else {
+                                if instant2 < instant1 {
+                                    Some(0.0)
+                                } else {
+                                    Some(instant2.duration_since(*instant1).as_secs_f64() * 1000.0)
+                                }
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // Look up entry index from tx_signature
+
+                details.push(AccountUpdateDetail {
+                    pubkey: update.pubkey.to_string(),
+                    write_version: update.write_version,
+                    tx_signature: update.tx_signature.to_string(),
+                    timestamp: Self::to_timestamp_ms(update.system_time),
+                    delay_ms,
+                });
+            }
+        }
+
+        details
     }
 
     fn calc_delays(
@@ -368,19 +597,16 @@ impl Processor {
         slot_status: SlotStatus,
     ) -> (Option<Duration>, Option<Duration>) {
         let key = (slot, slot_status);
-        
+
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
-                    // Endpoint1 saw it first, so endpoint2 had the delay
                     let wait_time = u2.instant.duration_since(u1.instant);
                     (Some(Duration::from_secs(0)), Some(wait_time))
                 } else if u2.instant < u1.instant {
-                    // Endpoint2 saw it first, so endpoint1 had the delay
                     let wait_time = u1.instant.duration_since(u2.instant);
                     (Some(wait_time), Some(Duration::from_secs(0)))
                 } else {
-                    // Both saw it at the same time
                     (Some(Duration::from_secs(0)), Some(Duration::from_secs(0)))
                 }
             }
@@ -393,7 +619,7 @@ impl Processor {
         map2: &HashMap<SlotKey, SlotUpdate>,
         slot: u64,
     ) -> (Option<Duration>, Option<Duration>) {
-       Self::calc_delays(map1, map2, slot, SlotStatus::FirstShredReceived)
+        Self::calc_delays(map1, map2, slot, SlotStatus::FirstShredReceived)
     }
 
     fn calc_processing_delays(
@@ -430,7 +656,6 @@ impl Processor {
             SlotStatus::Finalized,
         ];
 
-        // Collect transitions
         let mut transitions = Vec::new();
         for status in &statuses {
             if let Some(update) = map.get(&(slot, *status)) {
@@ -441,7 +666,6 @@ impl Processor {
             }
         }
 
-        // Calculate durations - unwrap is safe here because we checked all statuses exist
         let durations = StageDurations {
             download_ms: Self::calc_download(map, slot).unwrap().as_secs_f64() * 1000.0,
             replay_ms: Self::calc_replay(map, slot).unwrap().as_secs_f64() * 1000.0,
@@ -450,12 +674,13 @@ impl Processor {
         };
 
         SlotDetail {
-            first_shred_delay_ms: None, // Will be filled by caller
-            processing_delay_ms: None, // Will be filled by caller
-            confirmation_delay_ms: None, // Will be filled by caller
-            finalization_delay_ms: None, // Will be filled by caller
+            first_shred_delay_ms: None,
+            processing_delay_ms: None,
+            confirmation_delay_ms: None,
+            finalization_delay_ms: None,
             transitions,
             durations,
+            account_updates: Vec::new(),
         }
     }
 
