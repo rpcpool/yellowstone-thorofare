@@ -63,6 +63,7 @@ pub struct EndpointSummary {
     pub replay_time: Percentiles,
     pub confirmation_time: Percentiles,
     pub finalization_time: Percentiles,
+    pub account_delay: Option<Percentiles>,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,6 +222,10 @@ impl Processor {
         let mut endpoint2_confirmation_times = Vec::new();
         let mut endpoint2_finalization_times = Vec::new();
 
+        // Account update delay collections
+        let mut endpoint1_account_delays = Vec::new();
+        let mut endpoint2_account_delays = Vec::new();
+
         for slot in sorted_common_slots {
             // Check if slot is dead in either endpoint
             if map1.contains_key(&(slot, SlotStatus::Dead))
@@ -349,9 +354,25 @@ impl Processor {
                     &account_match_map,
                     2, // endpoint 2
                 );
+                
+                // Collect account delays for percentile calculation 
+                for update in &endpoint1_detail.account_updates {
+                    if let Some(delay_ms) = update.delay_ms {
+                        if delay_ms > 0.0 {
+                            endpoint1_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                        }
+                    }
+                }
+                for update in &endpoint2_detail.account_updates {
+                    if let Some(delay_ms) = update.delay_ms {
+                        if delay_ms > 0.0 {
+                            endpoint2_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                        }
+                    }
+                }
             }
 
-            // Collect metrics (we know these exist due to the check above)
+            // Collect metrics
             let d1 = Self::calc_download(&map1, slot).unwrap();
             let d2 = Self::calc_download(&map2, slot).unwrap();
             endpoint1_download_times.push(d1);
@@ -436,6 +457,11 @@ impl Processor {
                 replay_time: Self::percentiles(endpoint1_replay_times),
                 confirmation_time: Self::percentiles(endpoint1_confirmation_times),
                 finalization_time: Self::percentiles(endpoint1_finalization_times),
+                account_delay: if with_accounts && !endpoint1_account_delays.is_empty() {
+                    Some(Self::percentiles(endpoint1_account_delays))
+                } else {
+                    None
+                },
             },
             endpoint2_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
@@ -446,6 +472,11 @@ impl Processor {
                 replay_time: Self::percentiles(endpoint2_replay_times),
                 confirmation_time: Self::percentiles(endpoint2_confirmation_times),
                 finalization_time: Self::percentiles(endpoint2_finalization_times),
+                account_delay: if with_accounts && !endpoint2_account_delays.is_empty() {
+                    Some(Self::percentiles(endpoint2_account_delays))
+                } else {
+                    None
+                },
             },
             slots: slot_comparisons,
         }
@@ -525,16 +556,16 @@ impl Processor {
                     match (vec1.first(), vec2.first()) {
                         (Some((_, instant1)), Some((_, instant2))) => {
                             if endpoint_num == 1 {
-                                if instant1 > instant2 {
-                                    Some(instant1.duration_since(*instant2).as_secs_f64() * 1000.0)
-                                } else {
+                                if instant1 < instant2 {
                                     Some(0.0)
+                                } else {
+                                    Some(instant1.duration_since(*instant2).as_secs_f64() * 1000.0)
                                 }
                             } else {
-                                if instant2 > instant1 {
-                                    Some(instant2.duration_since(*instant1).as_secs_f64() * 1000.0)
-                                } else {
+                                if instant2 < instant1 {
                                     Some(0.0)
+                                } else {
+                                    Some(instant2.duration_since(*instant1).as_secs_f64() * 1000.0)
                                 }
                             }
                         }

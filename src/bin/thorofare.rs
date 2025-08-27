@@ -252,8 +252,14 @@ async fn main() {
                 result.endpoint1_summary.finalization_time.p90,
                 result.endpoint1_summary.finalization_time.p99
             );
+            info!(
+                "Account Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p50).unwrap_or(0.0),
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p90).unwrap_or(0.0),
+                result.endpoint1_summary.account_delay.as_ref().map(|d| d.p99).unwrap_or(0.0)
+            );
 
-            info!("\n=== ENDPOINT 12PERFORMANCE (ms) ===");
+            info!("\n=== ENDPOINT 2 PERFORMANCE (ms) ===");
             info!(
                 "First Shred Delay: p50={:.2}, p90={:.2}, p99={:.2}",
                 result.endpoint2_summary.first_shred_delay.p50,
@@ -301,6 +307,12 @@ async fn main() {
                 result.endpoint2_summary.finalization_time.p50,
                 result.endpoint2_summary.finalization_time.p90,
                 result.endpoint2_summary.finalization_time.p99
+            );
+            info!(
+                "Account Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p50).unwrap_or(0.0),
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p90).unwrap_or(0.0),
+                result.endpoint2_summary.account_delay.as_ref().map(|d| d.p99).unwrap_or(0.0)
             );
         }
         Err(e) => {
