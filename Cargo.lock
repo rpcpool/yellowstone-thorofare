@@ -6342,9 +6342,8 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-thorofare"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
  "clap",
  "futures",
  "humantime-serde",

@@ -1,16 +1,12 @@
 [package]
 name = "yellowstone-thorofare"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Triton One"]
 edition = "2024"
 description = "Benchmarking tool for comparing Solana nodes and Geyser Plugins (currently only gRPC protocol)"
 license = "Apache-2.0"
 resolver = "2"
 publish = false
-
-[[bin]]
-name = "test-grpc"
-path = "src/bin/test_grpc.rs"
 
 [[bin]]
 name = "thorofare"
@@ -29,8 +25,6 @@ solana-signature = "2"
 humantime-serde = "1.1.1"
 toml = "0.8.23"
 clap = { version = "4.5.40", features = ["derive"] }
-# Using `anyhow` for error handling in tests only
-anyhow = "1.0.98"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
 richat-client = "3.5.0"

@@ -2,7 +2,8 @@ use {
     crate::GrpcConfig,
     richat_client::{grpc::GrpcClient, stream::SubscribeStream},
     richat_proto::richat::GrpcSubscribeRequest,
-    tonic::service::Interceptor, yellowstone_grpc_client::ClientTlsConfig,
+    tonic::service::Interceptor,
+    yellowstone_grpc_client::ClientTlsConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -19,7 +20,8 @@ pub async fn richat_client_from_config(
     let ret = GrpcClient::build_from_shared(config.endpoint)?
         .x_token(config.x_token.map(|token| token.into_bytes()))
         .expect("Failed to set x_token")
-        .tls_config(ClientTlsConfig::new().with_native_roots()).expect("Failed to set TLS config")
+        .tls_config(ClientTlsConfig::new().with_native_roots())
+        .expect("Failed to set TLS config")
         .max_decoding_message_size(config.max_message_size)
         .connect_timeout(config.connect_timeout)
         .http2_adaptive_window(config.http2_adaptive_window)

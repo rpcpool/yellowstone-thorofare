@@ -1,5 +1,5 @@
 use {
-    crate::types::{AccountUpdate, BlockUpdate, EndpointData, EntryUpdate, SlotStatus, SlotUpdate},
+    crate::types::{AccountUpdate, EndpointData, SlotStatus, SlotUpdate},
     serde::Serialize,
     std::{
         collections::{HashMap, HashSet},
@@ -9,16 +9,15 @@ use {
 
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
-    pub version: String,           // Yellowstone Thorofare version
-    pub with_accounts: bool,          // Whether --with-accounts was used
+    pub version: String,                // Yellowstone Thorofare version
+    pub with_accounts: bool,            // Whether --with-accounts was used
+    pub account_owner: Option<String>,  // The account owner pubkey filter (if specified)
     pub grpc_config: GrpcConfigSummary, // gRPC config settings
     pub metadata: Metadata,
     pub endpoints: [EndpointInfo; 2],
     pub endpoint1_summary: EndpointSummary,
     pub endpoint2_summary: EndpointSummary,
     pub slots: Vec<SlotComparison>,
-    pub entry_analysis: Option<Vec<EntryAnalysis>>, // Entry-level analysis
-    pub entry_timing: Option<Vec<EntryTimingAnalysis>>, // Entry arrival timing
 }
 
 #[derive(Debug, Serialize)]
@@ -41,20 +40,17 @@ pub struct Metadata {
     pub duration_ms: u64,
     pub benchmark_start_time: u64,
     pub total_account_updates: Option<(u64, u64)>, // (endpoint1, endpoint2)
-    pub total_entries: Option<(u64, u64)>, // (endpoint1, endpoint2)
 }
 
 #[derive(Debug, Serialize)]
 pub struct EndpointInfo {
     pub endpoint: String,
-    pub plugin_type: String,    // "Yellowstone" or "Richat"
+    pub plugin_type: String, // "Yellowstone" or "Richat"
     pub plugin_version: String,
     pub avg_ping_ms: f64,
     pub total_updates: u64,
     pub unique_slots: u64,
     pub account_updates: Option<u64>,
-    pub entry_updates: Option<u64>,
-    pub slots_with_incomplete_updates: Option<u64>, // Slots where we didn't receive all expected account updates
 }
 
 #[derive(Debug, Serialize)]
@@ -113,42 +109,8 @@ pub struct AccountUpdateDetail {
     pub pubkey: String,
     pub write_version: u64,
     pub tx_signature: String,
-    pub delay_ms: Option<f64>,  // Delay vs other endpoint if matched
-    pub timestamp: u64,         // Timestamp in milliseconds since epoch
-    pub entry_index: Option<u64>,  // Entry index within the slot where this update originated
-}
-
-#[derive(Debug, Serialize)]
-pub struct EntryAnalysis {
-    pub slot: u64,
-    pub entry_index: u64,
-    pub endpoint1_account_updates: u64,
-    pub endpoint2_account_updates: u64,
-    pub endpoint1_succeeded_transactions: u64,
-    pub endpoint2_succeeded_transactions: u64,
-    pub endpoint1_failed_transactions: u64,
-    pub endpoint2_failed_transactions: u64,
-    pub endpoint1_total_transactions: u64,
-    pub endpoint2_total_transactions: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EntryTimingAnalysis {
-    pub slot: u64,
-    pub entry_index: u64,
-    pub endpoint1_timestamp: Option<u64>,
-    pub endpoint2_timestamp: Option<u64>,
-    pub delay_ms: f64,  // How much later one endpoint received it
-    pub gap_from_previous_ms: Option<f64>, // Time since previous entry (for cliff detection)
-    pub is_cliff: bool, // True if gap > threshold (indicates waiting for missing entries)
-}
-
-#[derive(Debug, Default)]
-struct EntryStats {
-    pub account_updates: u64,
-    pub succeeded_transactions: u64,
-    pub failed_transactions: u64,
-    pub total_transactions: u64,
+    pub delay_ms: Option<f64>, // Delay vs other endpoint if matched
+    pub timestamp: u64,        // Timestamp in milliseconds since epoch
 }
 
 type SlotKey = (u64, SlotStatus);
@@ -162,11 +124,10 @@ pub struct EndpointMetadata {
 pub struct Processor;
 
 impl Processor {
-    const ENTRY_CLIFF_THRESHOLD_MS: f64 = 50.0; // Gaps > 50ms indicate waiting for missing entries
-
     pub fn process(
         version: String,
         with_accounts: bool,
+        account_owner: Option<String>,
         grpc_config: GrpcConfigSummary,
         data1: EndpointData,
         data2: EndpointData,
@@ -183,65 +144,24 @@ impl Processor {
             .as_millis() as u64
             - duration_ms;
 
-        let mut endpoint1_incomplete_slots = 0u64;
-        let mut endpoint2_incomplete_slots = 0u64;
-
         // Get unique slots from each endpoint
         let endpoint1_updates = data1.updates.len() as u64;
         let endpoint2_updates = data2.updates.len() as u64;
-        
+
         // Account updates counts
         let endpoint1_account_updates = data1.account_updates.len() as u64;
         let endpoint2_account_updates = data2.account_updates.len() as u64;
-        
-        // Entry counts
-        let endpoint1_entries = data1.entry_updates.len() as u64;
-        let endpoint2_entries = data2.entry_updates.len() as u64;
 
         // Build lookup maps
         let map1 = Self::build_map(data1.updates);
         let map2 = Self::build_map(data2.updates);
 
-        // Analyze entry timing if we have entry data
-        let entry_timing = if !data1.entry_updates.is_empty() || !data2.entry_updates.is_empty() {
-            let timing = Self::analyze_entry_timing(&data1.entry_updates, &data2.entry_updates);
-            
-            // Report cliffs
-            let cliffs = Self::find_entry_cliffs(&timing);
-            if !cliffs.is_empty() {
-                eprintln!("Entry processing cliffs detected (gaps > {}ms):", Self::ENTRY_CLIFF_THRESHOLD_MS);
-                for (slot, entry_idx, endpoint, gap) in cliffs {
-                    eprintln!("  Slot {} Entry {} (Endpoint {}): {}ms gap", slot, entry_idx, endpoint, gap);
-                }
-            }
-            
-            Some(timing)
-        } else {
-            None
-        };
-
-        // Build expected account counts from blocks
-        let expected_updates1 = Self::get_expected_account_updates(&data1.block_updates);
-        let expected_updates2 = Self::get_expected_account_updates(&data2.block_updates);
-        
-        // Build tx to entry mappings if we have block data
-        let (tx_to_entry_map1, entry_stats1) = if with_accounts && !data1.block_updates.is_empty() {
-            Self::build_tx_to_entry_map_with_stats(&data1.block_updates, &data1.account_updates)
-        } else {
-            (HashMap::new(), HashMap::new())
-        };
-        
-        let (tx_to_entry_map2, entry_stats2) = if with_accounts && !data2.block_updates.is_empty() {
-            Self::build_tx_to_entry_map_with_stats(&data2.block_updates, &data2.account_updates)
-        } else {
-            (HashMap::new(), HashMap::new())
-        };
-
         // Build account maps if we have account data
         let (accounts1_by_slot, accounts2_by_slot, account_match_map) = if with_accounts {
             let accounts1 = Self::group_accounts_by_slot(&data1.account_updates);
             let accounts2 = Self::group_accounts_by_slot(&data2.account_updates);
-            let matches = Self::build_account_match_map(&data1.account_updates, &data2.account_updates);
+            let matches =
+                Self::build_account_match_map(&data1.account_updates, &data2.account_updates);
             (accounts1, accounts2, matches)
         } else {
             (HashMap::new(), HashMap::new(), HashMap::new())
@@ -323,48 +243,27 @@ impl Processor {
                 continue;
             }
 
-            // Check if we have all expected account updates using block's updated_account_count
+            // Check if we have the same number of account updates so our benchmark is fair
             if with_accounts {
-                let received1 = accounts1_by_slot.get(&slot).map(|v| v.len() as u64).unwrap_or(0);
-                let received2 = accounts2_by_slot.get(&slot).map(|v| v.len() as u64).unwrap_or(0);
-                let expected1 = expected_updates1.get(&slot).copied().unwrap_or(0);
-                let expected2 = expected_updates2.get(&slot).copied().unwrap_or(0);
-                
-                // Track incomplete slots
-                if expected1 > 0 && received1 < expected1 {
-                    endpoint1_incomplete_slots += 1;
-                }
-                if expected2 > 0 && received2 < expected2 {
-                    endpoint2_incomplete_slots += 1;
-                }
-                
-                // Skip slots where either endpoint doesn't have all expected updates
-                if (expected1 > 0 && received1 < expected1) || (expected2 > 0 && received2 < expected2) {
-                    eprintln!(
-                        "Slot {}: Incomplete account updates. Endpoint1: {}/{}, Endpoint2: {}/{}",
-                        slot, received1, expected1, received2, expected2
-                    );
-                    dropped_slots += 1;
-                    continue;
-                }
-                
-                // Also check for mismatched write versions (same account updated different times)
-                let mut has_mismatch = false;
-                for ((s, _pk, _sig), (vec1, vec2)) in &account_match_map {
-                    if *s == slot && vec1.len() != vec2.len() {
-                        has_mismatch = true;
-                        break;
-                    }
-                }
-                
-                if has_mismatch {
+                let received1 = accounts1_by_slot
+                    .get(&slot)
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(0);
+                let received2 = accounts2_by_slot
+                    .get(&slot)
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(0);
+
+                // Skip slots where we don't have the same number of account updates.
+                if received1 != received2 {
                     dropped_slots += 1;
                     continue;
                 }
             }
 
             // Calculate first shred delays
-            let (ep1_first_shred, ep2_first_shred) = Self::calc_first_shred_delays(&map1, &map2, slot);
+            let (ep1_first_shred, ep2_first_shred) =
+                Self::calc_first_shred_delays(&map1, &map2, slot);
 
             // Collect first shred delays
             if let Some(delay) = ep1_first_shred {
@@ -375,7 +274,8 @@ impl Processor {
             }
 
             // Calculate processing delays
-            let (ep1_processing_delay, ep2_processing_delay) = Self::calc_processing_delays(&map1, &map2, slot);
+            let (ep1_processing_delay, ep2_processing_delay) =
+                Self::calc_processing_delays(&map1, &map2, slot);
 
             // Collect processing delays
             if let Some(delay) = ep1_processing_delay {
@@ -386,7 +286,8 @@ impl Processor {
             }
 
             // Calculate confirmation delays
-            let (ep1_confirmation_delay, ep2_confirmation_delay) = Self::calc_confirmation_delays(&map1, &map2, slot);
+            let (ep1_confirmation_delay, ep2_confirmation_delay) =
+                Self::calc_confirmation_delays(&map1, &map2, slot);
 
             // Collect confirmation delays
             if let Some(delay) = ep1_confirmation_delay {
@@ -397,7 +298,8 @@ impl Processor {
             }
 
             // Calculate finalization delays
-            let (ep1_finalization_delay, ep2_finalization_delay) = Self::calc_finalization_delays(&map1, &map2, slot);
+            let (ep1_finalization_delay, ep2_finalization_delay) =
+                Self::calc_finalization_delays(&map1, &map2, slot);
 
             // Collect finalization delays
             if let Some(delay) = ep1_finalization_delay {
@@ -412,34 +314,40 @@ impl Processor {
             let mut endpoint2_detail = Self::build_slot_detail(&map2, slot);
 
             // Add first shred delays to slot details
-            endpoint1_detail.first_shred_delay_ms = ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.first_shred_delay_ms = ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.first_shred_delay_ms =
+                ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.first_shred_delay_ms =
+                ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add processing delays to slot details
-            endpoint1_detail.processing_delay_ms = ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.processing_delay_ms = ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.processing_delay_ms =
+                ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.processing_delay_ms =
+                ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add confirmation delays to slot details
-            endpoint1_detail.confirmation_delay_ms = ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.confirmation_delay_ms = ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.confirmation_delay_ms =
+                ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.confirmation_delay_ms =
+                ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add finalization delays to slot details
-            endpoint1_detail.finalization_delay_ms = ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
-            endpoint2_detail.finalization_delay_ms = ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint1_detail.finalization_delay_ms =
+                ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+            endpoint2_detail.finalization_delay_ms =
+                ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
 
             // Add account updates to slot details
             if with_accounts {
                 endpoint1_detail.account_updates = Self::build_account_details(
                     accounts1_by_slot.get(&slot),
                     &account_match_map,
-                    1,  // endpoint 1
-                    &tx_to_entry_map1,
+                    1, // endpoint 1
                 );
                 endpoint2_detail.account_updates = Self::build_account_details(
                     accounts2_by_slot.get(&slot),
                     &account_match_map,
-                    2,  // endpoint 2
-                    &tx_to_entry_map2,
+                    2, // endpoint 2
                 );
             }
 
@@ -473,16 +381,10 @@ impl Processor {
             compared_slots += 1;
         }
 
-        // Build entry analysis if we have the data
-        let entry_analysis = if with_accounts && !entry_stats1.is_empty() && !entry_stats2.is_empty() {
-            Some(Self::build_entry_analysis(&entry_stats1, &entry_stats2))
-        } else {
-            None
-        };
-
         BenchmarkResult {
             version,
             with_accounts,
+            account_owner,
             grpc_config,
             metadata: Metadata {
                 total_slots_collected,
@@ -496,11 +398,6 @@ impl Processor {
                 } else {
                     None
                 },
-                total_entries: if endpoint1_entries > 0 || endpoint2_entries > 0 {
-                    Some((endpoint1_entries, endpoint2_entries))
-                } else {
-                    None
-                },
             },
             endpoints: [
                 EndpointInfo {
@@ -510,9 +407,11 @@ impl Processor {
                     avg_ping_ms: ping1.as_secs_f64() * 1000.0,
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
-                    account_updates: if with_accounts { Some(endpoint1_account_updates) } else { None },
-                    entry_updates: if endpoint1_entries > 0 { Some(endpoint1_entries) } else { None },
-                    slots_with_incomplete_updates: if with_accounts { Some(endpoint1_incomplete_slots) } else { None },
+                    account_updates: if with_accounts {
+                        Some(endpoint1_account_updates)
+                    } else {
+                        None
+                    },
                 },
                 EndpointInfo {
                     endpoint: data2.endpoint,
@@ -521,9 +420,11 @@ impl Processor {
                     avg_ping_ms: ping2.as_secs_f64() * 1000.0,
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,
-                    account_updates: if with_accounts { Some(endpoint2_account_updates) } else { None },
-                    entry_updates: if endpoint2_entries > 0 { Some(endpoint2_entries) } else { None },
-                    slots_with_incomplete_updates: if with_accounts { Some(endpoint2_incomplete_slots) } else { None },
+                    account_updates: if with_accounts {
+                        Some(endpoint2_account_updates)
+                    } else {
+                        None
+                    },
                 },
             ],
             endpoint1_summary: EndpointSummary {
@@ -547,245 +448,7 @@ impl Processor {
                 finalization_time: Self::percentiles(endpoint2_finalization_times),
             },
             slots: slot_comparisons,
-            entry_analysis,
-            entry_timing,
         }
-    }
-
-    // Analyze entry timing between endpoints
-    fn analyze_entry_timing(
-        entries1: &[EntryUpdate],
-        entries2: &[EntryUpdate],
-    ) -> Vec<EntryTimingAnalysis> {
-        // Group entries by (slot, index)
-        let mut entries1_map: HashMap<(u64, u64), EntryUpdate> = HashMap::new();
-        let mut entries2_map: HashMap<(u64, u64), EntryUpdate> = HashMap::new();
-        
-        for entry in entries1 {
-            entries1_map.insert((entry.slot, entry.index), entry.clone());
-        }
-        
-        for entry in entries2 {
-            entries2_map.insert((entry.slot, entry.index), entry.clone());
-        }
-        
-        // Find all unique (slot, index) pairs
-        let mut all_keys: HashSet<(u64, u64)> = HashSet::new();
-        all_keys.extend(entries1_map.keys());
-        all_keys.extend(entries2_map.keys());
-        
-        let mut analysis: Vec<EntryTimingAnalysis> = Vec::new();
-        
-        for (slot, index) in all_keys {
-            let e1 = entries1_map.get(&(slot, index));
-            let e2 = entries2_map.get(&(slot, index));
-            
-            let (ts1, ts2, delay_ms) = match (e1, e2) {
-                (Some(e1), Some(e2)) => {
-                    let ts1 = Self::to_timestamp_ms(e1.system_time);
-                    let ts2 = Self::to_timestamp_ms(e2.system_time);
-                    let delay = if ts1 < ts2 {
-                        (ts2 - ts1) as f64
-                    } else {
-                        (ts1 - ts2) as f64
-                    };
-                    (Some(ts1), Some(ts2), delay)
-                }
-                (Some(e1), None) => (Some(Self::to_timestamp_ms(e1.system_time)), None, 0.0),
-                (None, Some(e2)) => (None, Some(Self::to_timestamp_ms(e2.system_time)), 0.0),
-                _ => (None, None, 0.0),
-            };
-            
-            analysis.push(EntryTimingAnalysis {
-                slot,
-                entry_index: index,
-                endpoint1_timestamp: ts1,
-                endpoint2_timestamp: ts2,
-                delay_ms,
-                gap_from_previous_ms: None,
-                is_cliff: false,
-            });
-        }
-        
-        // Sort by slot and entry index
-        analysis.sort_by_key(|a| (a.slot, a.entry_index));
-        
-        // Calculate gaps from previous entry and detect cliffs
-        for i in 1..analysis.len() {
-            if analysis[i].slot == analysis[i-1].slot {
-                // Same slot, calculate gaps for each endpoint
-                if let (Some(curr_ts1), Some(prev_ts1)) = (analysis[i].endpoint1_timestamp, analysis[i-1].endpoint1_timestamp) {
-                    let gap = (curr_ts1 - prev_ts1) as f64;
-                    analysis[i].gap_from_previous_ms = Some(gap);
-                    analysis[i].is_cliff = gap > Self::ENTRY_CLIFF_THRESHOLD_MS;
-                } else if let (Some(curr_ts2), Some(prev_ts2)) = (analysis[i].endpoint2_timestamp, analysis[i-1].endpoint2_timestamp) {
-                    let gap = (curr_ts2 - prev_ts2) as f64;
-                    analysis[i].gap_from_previous_ms = Some(gap);
-                    analysis[i].is_cliff = gap > Self::ENTRY_CLIFF_THRESHOLD_MS;
-                }
-            }
-        }
-        
-        analysis
-    }
-
-    // Find entry processing "cliffs" where delays spike
-    fn find_entry_cliffs(analysis: &Vec<EntryTimingAnalysis>) -> Vec<(u64, u64, u8, f64)> {
-        let mut cliffs = Vec::new();
-        
-        for entry in analysis {
-            if entry.is_cliff {
-                if let Some(gap) = entry.gap_from_previous_ms {
-                    // Determine which endpoint had the cliff
-                    let endpoint = if entry.endpoint1_timestamp.is_some() { 1 } else { 2 };
-                    cliffs.push((entry.slot, entry.entry_index, endpoint, gap));
-                }
-            }
-        }
-        
-        cliffs
-    }
-
-    // Get expected account update counts from blocks
-    fn get_expected_account_updates(blocks: &[BlockUpdate]) -> HashMap<u64, u64> {
-        blocks
-            .iter()
-            .map(|block| (block.slot, block.updated_account_count))
-            .collect()
-    }
-
-    // Build mapping from transaction signature to entry index with statistics
-    fn build_tx_to_entry_map_with_stats(
-        block_updates: &[BlockUpdate],
-        account_updates: &[AccountUpdate],
-    ) -> (HashMap<(u64, String), u64>, HashMap<(u64, u64), EntryStats>) {
-        let mut tx_to_entry = HashMap::new();
-        let mut entry_stats: HashMap<(u64, u64), EntryStats> = HashMap::new();
-        
-        // First, build a set of successful transaction signatures from account updates
-        let successful_txs: HashSet<(u64, String)> = account_updates
-            .iter()
-            .map(|update| (update.slot, update.tx_signature.to_string()))
-            .collect();
-        
-        for block in block_updates {
-            let slot = block.slot;
-            
-            // Sort entries by index to process in order
-            let mut entries = block.entries.clone();
-            entries.sort_by_key(|e| e.index);
-            
-            // Verify entries are contiguous and handle gaps
-            let mut expected_index = 0u64;
-            for entry in &entries {
-                if entry.index != expected_index {
-                    eprintln!(
-                        "Warning: Non-contiguous entries in slot {}: expected index {}, got {}",
-                        slot, expected_index, entry.index
-                    );
-                }
-                expected_index = entry.index + 1;
-            }
-            
-            for (i, entry) in entries.iter().enumerate() {
-                let entry_start = entry.starting_transaction_index;
-                
-                // Find where this entry ends
-                let entry_end = if i + 1 < entries.len() {
-                    entries[i + 1].starting_transaction_index
-                } else {
-                    block.transactions.len() as u64
-                };
-                
-                // Validate the range
-                if entry_end < entry_start {
-                    eprintln!(
-                        "Warning: Invalid entry range in slot {}, entry {}: start={}, end={}",
-                        slot, entry.index, entry_start, entry_end
-                    );
-                    continue;
-                }
-                
-                let mut stats = EntryStats::default();
-                stats.total_transactions = entry_end - entry_start;
-                
-                // Map all transactions in this range to this entry
-                for tx_idx in entry_start..entry_end {
-                    if let Some(tx) = block.transactions.get(tx_idx as usize) {
-                        let tx_key = (slot, tx.signature.to_string());
-                        
-                        // Check for duplicate transaction signatures in different entries
-                        if let Some(&existing_entry) = tx_to_entry.get(&tx_key) {
-                            if existing_entry != entry.index {
-                                eprintln!(
-                                    "Warning: Transaction {} appears in multiple entries: {} and {}",
-                                    tx.signature, existing_entry, entry.index
-                                );
-                            }
-                        }
-                        
-                        tx_to_entry.insert(tx_key.clone(), entry.index);
-                        
-                        // Check if transaction was successful (has account updates)
-                        if successful_txs.contains(&tx_key) {
-                            stats.succeeded_transactions += 1;
-                        } else {
-                            stats.failed_transactions += 1;
-                        }
-                    }
-                }
-                
-                entry_stats.insert((slot, entry.index), stats);
-            }
-        }
-        
-        // Count account updates per entry
-        for update in account_updates {
-            let tx_key = (update.slot, update.tx_signature.to_string());
-            if let Some(&entry_index) = tx_to_entry.get(&tx_key) {
-                if let Some(stats) = entry_stats.get_mut(&(update.slot, entry_index)) {
-                    stats.account_updates += 1;
-                }
-            }
-        }
-        
-        (tx_to_entry, entry_stats)
-    }
-
-    // Build entry analysis comparing both endpoints
-    fn build_entry_analysis(
-        stats1: &HashMap<(u64, u64), EntryStats>,
-        stats2: &HashMap<(u64, u64), EntryStats>,
-    ) -> Vec<EntryAnalysis> {
-        let mut all_keys: HashSet<(u64, u64)> = HashSet::new();
-        all_keys.extend(stats1.keys());
-        all_keys.extend(stats2.keys());
-        
-        let mut analysis: Vec<EntryAnalysis> = all_keys
-            .into_iter()
-            .map(|(slot, entry_index)| {
-                let s1 = stats1.get(&(slot, entry_index));
-                let s2 = stats2.get(&(slot, entry_index));
-                
-                EntryAnalysis {
-                    slot,
-                    entry_index,
-                    endpoint1_account_updates: s1.map_or(0, |s| s.account_updates),
-                    endpoint2_account_updates: s2.map_or(0, |s| s.account_updates),
-                    endpoint1_succeeded_transactions: s1.map_or(0, |s| s.succeeded_transactions),
-                    endpoint2_succeeded_transactions: s2.map_or(0, |s| s.succeeded_transactions),
-                    endpoint1_failed_transactions: s1.map_or(0, |s| s.failed_transactions),
-                    endpoint2_failed_transactions: s2.map_or(0, |s| s.failed_transactions),
-                    endpoint1_total_transactions: s1.map_or(0, |s| s.total_transactions),
-                    endpoint2_total_transactions: s2.map_or(0, |s| s.total_transactions),
-                }
-            })
-            .collect();
-        
-        // Sort by slot and entry index
-        analysis.sort_by_key(|a| (a.slot, a.entry_index));
-        
-        analysis
     }
 
     // Group account updates by slot
@@ -806,7 +469,7 @@ impl Processor {
         updates2: &[AccountUpdate],
     ) -> HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)> {
         let mut map = HashMap::new();
-        
+
         // Group by (slot, pubkey, signature) and keep all write_versions
         for update in updates1 {
             let key = (
@@ -816,9 +479,10 @@ impl Processor {
             );
             map.entry(key)
                 .or_insert((Vec::new(), Vec::new()))
-                .0.push((update.write_version, update.instant));
+                .0
+                .push((update.write_version, update.instant));
         }
-        
+
         for update in updates2 {
             let key = (
                 update.slot,
@@ -827,15 +491,16 @@ impl Processor {
             );
             map.entry(key)
                 .or_insert((Vec::new(), Vec::new()))
-                .1.push((update.write_version, update.instant));
+                .1
+                .push((update.write_version, update.instant));
         }
-        
+
         // Sort each vec by write_version to match first-to-first, second-to-second
         for (_, (vec1, vec2)) in map.iter_mut() {
             vec1.sort_by_key(|(wv, _)| *wv);
             vec2.sort_by_key(|(wv, _)| *wv);
         }
-        
+
         map
     }
 
@@ -844,10 +509,9 @@ impl Processor {
         updates: Option<&Vec<AccountUpdate>>,
         match_map: &HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)>,
         endpoint_num: usize,
-        tx_to_entry_map: &HashMap<(u64, String), u64>,
     ) -> Vec<AccountUpdateDetail> {
         let mut details = Vec::new();
-        
+
         if let Some(updates) = updates {
             for update in updates {
                 let key = (
@@ -855,7 +519,7 @@ impl Processor {
                     update.pubkey.to_string(),
                     update.tx_signature.to_string(),
                 );
-                
+
                 // Calculate delay if matched
                 let delay_ms = if let Some((vec1, vec2)) = match_map.get(&key) {
                     match (vec1.first(), vec2.first()) {
@@ -879,21 +543,19 @@ impl Processor {
                 } else {
                     None
                 };
-                
+
                 // Look up entry index from tx_signature
-                let entry_index = tx_to_entry_map.get(&(update.slot, update.tx_signature.to_string())).copied();
-                
+
                 details.push(AccountUpdateDetail {
                     pubkey: update.pubkey.to_string(),
                     write_version: update.write_version,
                     tx_signature: update.tx_signature.to_string(),
                     timestamp: Self::to_timestamp_ms(update.system_time),
                     delay_ms,
-                    entry_index,
                 });
             }
         }
-        
+
         details
     }
 
@@ -904,7 +566,7 @@ impl Processor {
         slot_status: SlotStatus,
     ) -> (Option<Duration>, Option<Duration>) {
         let key = (slot, slot_status);
-        
+
         match (map1.get(&key), map2.get(&key)) {
             (Some(u1), Some(u2)) => {
                 if u1.instant < u2.instant {
@@ -926,7 +588,7 @@ impl Processor {
         map2: &HashMap<SlotKey, SlotUpdate>,
         slot: u64,
     ) -> (Option<Duration>, Option<Duration>) {
-       Self::calc_delays(map1, map2, slot, SlotStatus::FirstShredReceived)
+        Self::calc_delays(map1, map2, slot, SlotStatus::FirstShredReceived)
     }
 
     fn calc_processing_delays(
