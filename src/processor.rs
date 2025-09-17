@@ -542,7 +542,6 @@ impl Processor {
         endpoint_num: usize,
     ) -> Vec<AccountUpdateDetail> {
         let mut details = Vec::new();
-
         if let Some(updates) = updates {
             for update in updates {
                 let key = (
@@ -550,10 +549,9 @@ impl Processor {
                     update.pubkey.to_string(),
                     update.tx_signature.to_string(),
                 );
-
-                // Calculate delay if matched
+                // Calculate delay if matched, using the highest write_version (last update)
                 let delay_ms = if let Some((vec1, vec2)) = match_map.get(&key) {
-                    match (vec1.first(), vec2.first()) {
+                    match (vec1.last(), vec2.last()) {
                         (Some((_, instant1)), Some((_, instant2))) => {
                             if endpoint_num == 1 {
                                 if instant1 < instant2 {
@@ -574,9 +572,6 @@ impl Processor {
                 } else {
                     None
                 };
-
-                // Look up entry index from tx_signature
-
                 details.push(AccountUpdateDetail {
                     pubkey: update.pubkey.to_string(),
                     write_version: update.write_version,
@@ -586,7 +581,6 @@ impl Processor {
                 });
             }
         }
-
         details
     }
 
