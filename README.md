@@ -1,68 +1,86 @@
-# Yellowstone Thorofare gRPC Benchmark Tool
+# Yellowstone Thorofare
 
-A simple tool to compare the performance of two Yellowstone gRPC endpoints.
+Benchmarking tool for Solana Geyser gRPC endpoints. Compares two endpoints simultaneously to measure actual performance differences.
 
-## Compilation
-
-### Build Release Binary
+## Build
 ```bash
 cargo build --release
-# Binary will be at: target/release/thorofare
 ```
 
-### Run Directly with Cargo
+## What it measures
+
+- All 6 slot stages: FirstShredReceived, CreatedBank, Completed, Processed, Confirmed, Finalized
+- Download time (FirstShredReceived > Completed)
+- Replay time (CreatedBank > Processed)
+- Account update propagation delays (optional)
+
+## Basic usage
 ```bash
-cargo run --bin thorofare -- --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
+thorofare --endpoint1 endpoint1.com:10000 --endpoint2 endpoint2.com:10000
 ```
 
-## Basic Usage
+## Arguments
 
+Required:
+- `--endpoint1` - First endpoint (host:port)
+- `--endpoint2` - Second endpoint (host:port)
+
+Optional:
+- `--x-token1` - Auth token for endpoint1
+- `--x-token2` - Auth token for endpoint2
+- `--slots` - Number of slots to collect (default: 1000)
+- `--with-accounts` - Track account updates
+- `--account-owner` - Filter by program ID (requires --with-accounts) (default: Raydium AMM V4)
+- `--config` - Config file (default: config.toml)
+- `--output` - Output file (default: benchmark_results.json)
+
+## Examples
+
+With auth tokens:
 ```bash
-# Compare two endpoints
-./thorofare --endpoint1 https://endpoint1.com:443 --endpoint2 https://endpoint2.com:443
-
-# With authentication tokens
-./thorofare \
-  --endpoint1 https://endpoint1.com:443 \
-  --endpoint2 https://endpoint2.com:443 \
+thorofare \
+  --endpoint1 endpoint1.com:10000 \
+  --endpoint2 endpoint2.com:10000 \
   --x-token1 YOUR_TOKEN_1 \
   --x-token2 YOUR_TOKEN_2
-
-# Collect more slots (default is 1000)
-./thorofare \
-  --endpoint1 https://endpoint1.com:443 \
-  --endpoint2 https://endpoint2.com:443 \
-  --slots 5000
-
-# With load testing (subscribes to additional account updates)
-./thorofare \
-  --endpoint1 https://endpoint1.com:443 \
-  --endpoint2 https://endpoint2.com:443 \
-  --with-load \
-  --config config-with-load-example.toml
 ```
 
-## CLI Options
-
-- `--endpoint1` - First gRPC endpoint URL
-- `--endpoint2` - Second gRPC endpoint URL  
-- `--x-token1` - X token for endpoint1 (optional)
-- `--x-token2` - X token for endpoint2 (optional)
-- `--slots` - Number of slots to collect (default: 1000)
-- `--config` - Config file path (default: config.toml)
-- `--output` - Output JSON file (default: benchmark_results.json)
-- `--log-level` - Log level: debug/info/warn/error (default: info)
-- `--with-load` - Enable load testing mode
-
-## Config Files
-
-- Use `config-example.toml` for normal benchmarks
-- Use `config-with-load-example.toml` when using `--with-load`
+Track Raydium account updates:
+```bash
+thorofare \
+  --endpoint1 endpoint1.com:10000 \
+  --endpoint2 endpoint2.com:10000 \
+  --with-accounts \
+  --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
+```
 
 ## Output
 
-Results are saved to `benchmark_results.json` (or your specified output file) with performance metrics like:
-- Latency percentiles (p50, p90, p99)
-- Slot processing times
-- Network ping times
-- Detailed timing breakdowns
+Generates JSON with:
+- Slot timing comparisons
+- P50/P90/P99 percentiles
+- Account update delays (if enabled)
+- Ping latencies
+
+You can visualize here https://thorofare.triton.one/
+
+## Config
+
+See config.toml for gRPC tuning options. Most important:
+- `tcp_nodelay = true` for low latency
+- `initial_connection_window_size` for heavy subscriptions
+- `initial_connection_window_size` for heavy subscriptions
+(Recommend reading: https://httpwg.org/specs/rfc9113.html#rfc.section.6.9.1, for window size)
+
+## Contributing
+
+PRs welcome. Keep it simple:
+1. Fork and create a branch
+2. Make your changes
+3. Test against at least 2 different endpoints
+4. Submit PR :D
+
+## Related
+
+- UI: https://github.com/rpcpool/yellowstone-thorofare-ui
+- Live UI: https://thorofare.triton.one/
