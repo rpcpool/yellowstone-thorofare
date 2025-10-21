@@ -82,5 +82,4 @@ PRs welcome. Keep it simple:
 
 ## Related
 
-- UI: https://github.com/rpcpool/yellowstone-thorofare-ui
-- Live UI: https://thorofare.triton.one/
+- UI Repo: https://github.com/rpcpool/yellowstone-thorofare-ui
