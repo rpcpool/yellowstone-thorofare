@@ -5,7 +5,9 @@ use {
         types::{AccountUpdate, SlotStatus, SlotUpdate},
     },
     futures::StreamExt,
-    richat_proto::richat::RichatFilter,
+    richat_proto::{
+        geyser::subscribe_update::UpdateOneof as RichatUpdateOneof, richat::RichatFilter,
+    },
     solana_pubkey::Pubkey,
     solana_signature::Signature,
     std::{
@@ -18,7 +20,7 @@ use {
     yellowstone_grpc_proto::{
         geyser::{
             SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots,
-            subscribe_update::UpdateOneof,
+            subscribe_update::UpdateOneof as YellowstoneUpdateOneof,
         },
         tonic::transport::ClientTlsConfig,
     },
@@ -109,7 +111,7 @@ impl GrpcClient {
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
 
-            if let Some(UpdateOneof::Slot(slot)) = msg.update_oneof {
+            if let Some(YellowstoneUpdateOneof::Slot(slot)) = msg.update_oneof {
                 let update = SlotUpdate {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
@@ -149,7 +151,7 @@ impl GrpcClient {
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
 
-            if let Some(UpdateOneof::Account(account)) = msg.update_oneof {
+            if let Some(YellowstoneUpdateOneof::Account(account)) = msg.update_oneof {
                 let pubkey = Pubkey::try_from(
                     account
                         .account
@@ -205,7 +207,7 @@ impl GrpcClient {
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
 
-            if let Some(UpdateOneof::Slot(slot)) = msg.update_oneof {
+            if let Some(RichatUpdateOneof::Slot(slot)) = msg.update_oneof {
                 let update = SlotUpdate {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
@@ -240,7 +242,7 @@ impl GrpcClient {
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
 
-            if let Some(UpdateOneof::Account(account)) = msg.update_oneof {
+            if let Some(RichatUpdateOneof::Account(account)) = msg.update_oneof {
                 let pubkey = Pubkey::try_from(
                     account
                         .account
@@ -452,7 +454,7 @@ impl SlotCollector {
         info!(
             "{}: avg ping {:.2}ms",
             endpoint,
-            avg_ping.as_secs_f64() * 1000.0
+            avg_ping.as_micros() as f64 / 1000.0
         );
 
         Ok(Self {
@@ -483,10 +485,8 @@ impl SlotCollector {
                     if let Err(e) = client.subscribe_slots_richat(slot_tx).await {
                         error!("{} slot subscription failed: {}", endpoint, e);
                     }
-                } else {
-                    if let Err(e) = client.subscribe_slots(slot_tx).await {
-                        error!("{} slot subscription failed: {}", endpoint, e);
-                    }
+                } else if let Err(e) = client.subscribe_slots(slot_tx).await {
+                    error!("{} slot subscription failed: {}", endpoint, e);
                 }
             })
         };
@@ -500,20 +500,16 @@ impl SlotCollector {
                     if let Err(e) = client.subscribe_accounts_richat(account_tx).await {
                         error!("{} account subscription failed: {}", endpoint, e);
                     }
-                } else {
-                    if let Err(e) = client.subscribe_accounts(account_tx).await {
-                        error!("{} account subscription failed: {}", endpoint, e);
-                    }
+                } else if let Err(e) = client.subscribe_accounts(account_tx).await {
+                    error!("{} account subscription failed: {}", endpoint, e);
                 }
             }))
         } else {
             None
         };
 
-        let slots_and_buffer = self.target_slots as f32 * (1.0 + self.buffer_percent);
-        let pre_allocate_capacity =
-            EndpointData::calculate_capacity(self.target_slots, self.buffer_percent);
-        let mut seen_slots = HashSet::with_capacity(pre_allocate_capacity);
+        let target_slot_count = (self.target_slots as f32 * (1.0 + self.buffer_percent)) as usize;
+        let mut seen_slots = HashSet::with_capacity(target_slot_count);
 
         let mut last_logged_percent = 0;
 
@@ -524,7 +520,8 @@ impl SlotCollector {
                     seen_slots.insert(update.slot);
                     self.endpoint_data.updates.push(update);
 
-                    let percent = (seen_slots.len() as f32 / slots_and_buffer * 100.0).floor() as u32;
+                    let percent =
+                        (seen_slots.len() as f32 / target_slot_count as f32 * 100.0).floor() as u32;
                     if percent >= last_logged_percent + 10 {
                         info!(
                             "{}: {:.0}% of slots seen ({} unique slots)",
@@ -535,7 +532,7 @@ impl SlotCollector {
                         last_logged_percent = percent;
                     }
 
-                    if seen_slots.len() >= slots_and_buffer as usize {
+                    if seen_slots.len() >= target_slot_count {
                         break;
                     }
                 }

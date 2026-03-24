@@ -320,27 +320,27 @@ impl Processor {
 
             // Add first shred delays to slot details
             endpoint1_detail.first_shred_delay_ms =
-                ep1_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+                ep1_first_shred.map(|d| d.as_micros() as f64 / 1000.0);
             endpoint2_detail.first_shred_delay_ms =
-                ep2_first_shred.map(|d| d.as_secs_f64() * 1000.0);
+                ep2_first_shred.map(|d| d.as_micros() as f64 / 1000.0);
 
             // Add processing delays to slot details
             endpoint1_detail.processing_delay_ms =
-                ep1_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep1_processing_delay.map(|d| d.as_micros() as f64 / 1000.0);
             endpoint2_detail.processing_delay_ms =
-                ep2_processing_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep2_processing_delay.map(|d| d.as_micros() as f64 / 1000.0);
 
             // Add confirmation delays to slot details
             endpoint1_detail.confirmation_delay_ms =
-                ep1_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep1_confirmation_delay.map(|d| d.as_micros() as f64 / 1000.0);
             endpoint2_detail.confirmation_delay_ms =
-                ep2_confirmation_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep2_confirmation_delay.map(|d| d.as_micros() as f64 / 1000.0);
 
             // Add finalization delays to slot details
             endpoint1_detail.finalization_delay_ms =
-                ep1_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep1_finalization_delay.map(|d| d.as_micros() as f64 / 1000.0);
             endpoint2_detail.finalization_delay_ms =
-                ep2_finalization_delay.map(|d| d.as_secs_f64() * 1000.0);
+                ep2_finalization_delay.map(|d| d.as_micros() as f64 / 1000.0);
 
             // Add account updates to slot details
             if with_accounts {
@@ -354,19 +354,22 @@ impl Processor {
                     &account_match_map,
                     2, // endpoint 2
                 );
-                
-                // Collect account delays for percentile calculation 
+
+                // Collect account delays for percentile calculation
+                // Use microseconds directly to avoid precision loss from f64 conversions
                 for update in &endpoint1_detail.account_updates {
                     if let Some(delay_ms) = update.delay_ms {
                         if delay_ms > 0.0 {
-                            endpoint1_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                            endpoint1_account_delays
+                                .push(Duration::from_micros((delay_ms * 1000.0) as u64));
                         }
                     }
                 }
                 for update in &endpoint2_detail.account_updates {
                     if let Some(delay_ms) = update.delay_ms {
                         if delay_ms > 0.0 {
-                            endpoint2_account_delays.push(Duration::from_secs_f64(delay_ms / 1000.0));
+                            endpoint2_account_delays
+                                .push(Duration::from_micros((delay_ms * 1000.0) as u64));
                         }
                     }
                 }
@@ -425,7 +428,7 @@ impl Processor {
                     endpoint: data1.endpoint,
                     plugin_type: meta1.plugin_type,
                     plugin_version: meta1.plugin_version,
-                    avg_ping_ms: ping1.as_secs_f64() * 1000.0,
+                    avg_ping_ms: ping1.as_micros() as f64 / 1000.0,
                     total_updates: endpoint1_updates,
                     unique_slots: endpoint1_slots.len() as u64,
                     account_updates: if with_accounts {
@@ -438,7 +441,7 @@ impl Processor {
                     endpoint: data2.endpoint,
                     plugin_type: meta2.plugin_type,
                     plugin_version: meta2.plugin_version,
-                    avg_ping_ms: ping2.as_secs_f64() * 1000.0,
+                    avg_ping_ms: ping2.as_micros() as f64 / 1000.0,
                     total_updates: endpoint2_updates,
                     unique_slots: endpoint2_slots.len() as u64,
                     account_updates: if with_accounts {
@@ -484,12 +487,9 @@ impl Processor {
 
     // Group account updates by slot
     fn group_accounts_by_slot(updates: &[AccountUpdate]) -> HashMap<u64, Vec<AccountUpdate>> {
-        let mut by_slot = HashMap::new();
+        let mut by_slot: HashMap<u64, Vec<AccountUpdate>> = HashMap::new();
         for update in updates {
-            by_slot
-                .entry(update.slot)
-                .or_insert_with(|| Vec::with_capacity(100))
-                .push(update.clone());
+            by_slot.entry(update.slot).or_default().push(update.clone());
         }
         by_slot
     }
@@ -557,14 +557,15 @@ impl Processor {
                                 if instant1 < instant2 {
                                     Some(0.0)
                                 } else {
-                                    Some(instant1.duration_since(*instant2).as_secs_f64() * 1000.0)
+                                    Some(
+                                        instant1.duration_since(*instant2).as_micros() as f64
+                                            / 1000.0,
+                                    )
                                 }
+                            } else if instant2 < instant1 {
+                                Some(0.0)
                             } else {
-                                if instant2 < instant1 {
-                                    Some(0.0)
-                                } else {
-                                    Some(instant2.duration_since(*instant1).as_secs_f64() * 1000.0)
-                                }
+                                Some(instant2.duration_since(*instant1).as_micros() as f64 / 1000.0)
                             }
                         }
                         _ => None,
@@ -661,10 +662,12 @@ impl Processor {
         }
 
         let durations = StageDurations {
-            download_ms: Self::calc_download(map, slot).unwrap().as_secs_f64() * 1000.0,
-            replay_ms: Self::calc_replay(map, slot).unwrap().as_secs_f64() * 1000.0,
-            confirmation_ms: Self::calc_confirmation(map, slot).unwrap().as_secs_f64() * 1000.0,
-            finalization_ms: Self::calc_finalization(map, slot).unwrap().as_secs_f64() * 1000.0,
+            download_ms: Self::calc_download(map, slot).unwrap().as_micros() as f64 / 1000.0,
+            replay_ms: Self::calc_replay(map, slot).unwrap().as_micros() as f64 / 1000.0,
+            confirmation_ms: Self::calc_confirmation(map, slot).unwrap().as_micros() as f64
+                / 1000.0,
+            finalization_ms: Self::calc_finalization(map, slot).unwrap().as_micros() as f64
+                / 1000.0,
         };
 
         SlotDetail {
@@ -726,9 +729,9 @@ impl Processor {
         let len = values.len();
 
         Percentiles {
-            p50: values[len.saturating_sub(1).min(len * 50 / 100)].as_secs_f64() * 1000.0,
-            p90: values[len.saturating_sub(1).min(len * 90 / 100)].as_secs_f64() * 1000.0,
-            p99: values[len.saturating_sub(1).min(len * 99 / 100)].as_secs_f64() * 1000.0,
+            p50: values[(len - 1) * 50 / 100].as_micros() as f64 / 1000.0,
+            p90: values[(len - 1) * 90 / 100].as_micros() as f64 / 1000.0,
+            p99: values[(len - 1) * 99 / 100].as_micros() as f64 / 1000.0,
         }
     }
 }

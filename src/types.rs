@@ -58,18 +58,13 @@ pub struct EndpointData {
 
 impl EndpointData {
     pub fn new(endpoint: String, slot_count: usize, buffer_percent: f32) -> Self {
-        let capacity = Self::calculate_capacity(slot_count, buffer_percent);
-        let account_capacity = capacity * 350_000;
+        let buffered_slot_count = (slot_count as f32 * (1.0 + buffer_percent)) as usize;
+        let update_capacity = buffered_slot_count * 6;
 
         Self {
-            updates: Vec::with_capacity(capacity),
-            account_updates: Vec::with_capacity(account_capacity),
+            updates: Vec::with_capacity(update_capacity),
+            account_updates: Vec::new(),
             endpoint,
         }
-    }
-
-    pub fn calculate_capacity(slot_count: usize, buffer_percent: f32) -> usize {
-        // 6 statuses possible (excluding dead) per slot
-        ((slot_count as f32 * (1.0 + buffer_percent)) as usize) * 6
     }
 }

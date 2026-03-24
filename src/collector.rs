@@ -36,7 +36,7 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(
+    pub const fn new(
         config: Config,
         endpoint1: String,
         endpoint2: String,
@@ -155,7 +155,7 @@ impl Collector {
         collector.collect().await
     }
 
-    pub fn get_grpc_config_summary(&self) -> GrpcConfigSummary {
+    pub const fn get_grpc_config_summary(&self) -> GrpcConfigSummary {
         let g = &self.config.grpc;
         GrpcConfigSummary {
             connect_timeout_ms: g.connect_timeout.as_millis() as u64,
@@ -168,7 +168,7 @@ impl Collector {
         }
     }
 
-    fn make_grpc_config(&self, endpoint: String, x_token: Option<String>) -> GrpcConfig {
+    const fn make_grpc_config(&self, endpoint: String, x_token: Option<String>) -> GrpcConfig {
         let g = &self.config.grpc;
         GrpcConfig {
             endpoint,

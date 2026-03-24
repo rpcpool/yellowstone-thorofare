@@ -5,7 +5,7 @@ max_message_size = 1048576  # 1MB - slot updates are ~32 bytes
 use_tls = true
 
 # HTTP2 flow control
-http2_adaptive_window = false          # Small messages don't benefit
+http2_adaptive_window = true           # Let tonic tune flow control dynamically
 http2_keep_alive_interval = "30s"      # Detect dead connections
 initial_connection_window_size = 65535 # 64KB - HTTP2 spec default
 initial_stream_window_size = 65535     # 64KB - HTTP2 spec default
