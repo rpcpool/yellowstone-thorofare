@@ -73,7 +73,7 @@ impl Default for Config {
                 request_timeout: Duration::from_secs(30),
                 max_message_size: 1024 * 1024, // 1MB plenty for slot updates
                 use_tls: true,
-                http2_adaptive_window: true,  // Let tonic tune flow control dynamically
+                http2_adaptive_window: true, // Let tonic tune flow control dynamically
                 http2_keep_alive_interval: Some(Duration::from_secs(30)),
                 initial_connection_window_size: Some(65535), // HTTP2 default
                 initial_stream_window_size: Some(65535),     // HTTP2 default

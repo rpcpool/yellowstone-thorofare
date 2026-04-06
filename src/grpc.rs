@@ -15,7 +15,7 @@ use {
         time::{Duration, Instant, SystemTime},
     },
     tokio::sync::mpsc,
-    tracing::{error, info},
+    tracing::{error, info, warn},
     yellowstone_grpc_client::{GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::{
         geyser::{
@@ -408,6 +408,8 @@ pub struct SlotCollector {
 }
 
 impl SlotCollector {
+    const UNKNOWN_VERSION: &str = "unknown";
+
     pub async fn new(
         config: GrpcConfig,
         target_slots: usize,
@@ -420,33 +422,65 @@ impl SlotCollector {
         let endpoint = config.endpoint.clone();
         let client = GrpcClient::new(config, with_accounts, account_owner)?;
 
-        // Get version first
+        // Version is metadata only, so don't fail the whole benchmark if it isn't exposed.
         let version = if richat {
             info!("Getting Richat version...");
-            client.get_version_richat().await?
+            match client.get_version_richat().await {
+                Ok(version) => version,
+                Err(error) => {
+                    warn!(
+                        "{}: failed to get Richat version ({}); using {}",
+                        endpoint,
+                        error,
+                        Self::UNKNOWN_VERSION
+                    );
+                    Self::UNKNOWN_VERSION.to_string()
+                }
+            }
         } else {
             info!("Getting Yellowstone version...");
-            client.get_version().await?
+            match client.get_version().await {
+                Ok(version) => version,
+                Err(error) => {
+                    warn!(
+                        "{}: failed to get Yellowstone version ({}); using {}",
+                        endpoint,
+                        error,
+                        Self::UNKNOWN_VERSION
+                    );
+                    Self::UNKNOWN_VERSION.to_string()
+                }
+            }
         };
 
         info!("{}: version {}", endpoint, version);
 
-        // Measure ping
+        // Ping is also metadata, so keep going if the probe isn't available.
         let avg_ping = if latency_samples > 0 {
             let latencies = if richat {
                 info!(
                     "Measuring Richat latency with {} samples...",
                     latency_samples
                 );
-                client.measure_latency_richat(latency_samples).await?
+                client.measure_latency_richat(latency_samples).await
             } else {
                 info!(
                     "Measuring Geyser latency with {} samples...",
                     latency_samples
                 );
-                client.measure_latency(latency_samples).await?
+                client.measure_latency(latency_samples).await
             };
-            latencies.iter().sum::<Duration>() / latencies.len() as u32
+
+            match latencies {
+                Ok(latencies) => latencies.iter().sum::<Duration>() / latencies.len() as u32,
+                Err(error) => {
+                    warn!(
+                        "{}: failed to measure latency ({}); using 0ms",
+                        endpoint, error
+                    );
+                    Duration::ZERO
+                }
+            }
         } else {
             Duration::ZERO
         };
