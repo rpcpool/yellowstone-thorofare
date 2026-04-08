@@ -58,6 +58,10 @@ struct Args {
     /// Filter accounts by owner pubkey (optional, requires --with-accounts)
     #[clap(long)]
     account_owner: Option<String>,
+
+    /// Collect all transaction updates for comparison
+    #[clap(long)]
+    with_transactions: bool,
 }
 
 #[tokio::main]
@@ -92,6 +96,7 @@ async fn main() {
 
     info!("Starting Yellowstone-Thorofare v{}", VERSION);
     info!("With Accounts: {}", args.with_accounts);
+    info!("With Transactions: {}", args.with_transactions);
     // Verify if either --with-account or --account-owner is activated so both need to be passed
     if args.account_owner.is_some() && !args.with_accounts
         || args.with_accounts && args.account_owner.is_none()
@@ -140,6 +145,7 @@ async fn main() {
         args.slots,
         args.with_accounts,
         args.account_owner.clone(),
+        args.with_transactions,
     );
 
     info!("Starting data collection...");
@@ -154,6 +160,7 @@ async fn main() {
                 VERSION.to_string(),
                 args.with_accounts,
                 args.account_owner,
+                args.with_transactions,
                 grpc_config_summary,
                 data1,
                 data2,
@@ -174,6 +181,7 @@ async fn main() {
             info!("\n=== BENCHMARK SUMMARY ===");
             info!("Tool version: {}", VERSION);
             info!("With Accounts: {}", args.with_accounts);
+            info!("With Transactions: {}", args.with_transactions);
             info!(
                 "Total slots collected: {}",
                 result.metadata.total_slots_collected
@@ -284,6 +292,38 @@ async fn main() {
                     pct
                 );
             }
+            info!(
+                "Transaction Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result
+                    .endpoint1_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p50)
+                    .unwrap_or(0.0),
+                result
+                    .endpoint1_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p90)
+                    .unwrap_or(0.0),
+                result
+                    .endpoint1_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p99)
+                    .unwrap_or(0.0)
+            );
+            if result.endpoint1_summary.transaction_matched > 0 {
+                let pct = result.endpoint1_summary.transaction_faster as f64
+                    / result.endpoint1_summary.transaction_matched as f64
+                    * 100.0;
+                info!(
+                    "Transaction Wins: {}/{} ({:.1}%)",
+                    result.endpoint1_summary.transaction_faster,
+                    result.endpoint1_summary.transaction_matched,
+                    pct
+                );
+            }
 
             info!("\n=== ENDPOINT 2 PERFORMANCE (ms) ===");
             info!(
@@ -363,6 +403,38 @@ async fn main() {
                     "Account Wins: {}/{} ({:.1}%)",
                     result.endpoint2_summary.account_faster,
                     result.endpoint2_summary.account_matched,
+                    pct
+                );
+            }
+            info!(
+                "Transaction Delay: p50={:.2}, p90={:.2}, p99={:.2}",
+                result
+                    .endpoint2_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p50)
+                    .unwrap_or(0.0),
+                result
+                    .endpoint2_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p90)
+                    .unwrap_or(0.0),
+                result
+                    .endpoint2_summary
+                    .transaction_delay
+                    .as_ref()
+                    .map(|d| d.p99)
+                    .unwrap_or(0.0)
+            );
+            if result.endpoint2_summary.transaction_matched > 0 {
+                let pct = result.endpoint2_summary.transaction_faster as f64
+                    / result.endpoint2_summary.transaction_matched as f64
+                    * 100.0;
+                info!(
+                    "Transaction Wins: {}/{} ({:.1}%)",
+                    result.endpoint2_summary.transaction_faster,
+                    result.endpoint2_summary.transaction_matched,
                     pct
                 );
             }

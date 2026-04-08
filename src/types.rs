@@ -23,6 +23,14 @@ pub struct AccountUpdate {
     pub system_time: SystemTime,
 }
 
+#[derive(Debug, Clone)]
+pub struct TransactionUpdate {
+    pub slot: u64,
+    pub signature: Signature,
+    pub instant: Instant,
+    pub system_time: SystemTime,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlotStatus {
@@ -53,6 +61,7 @@ impl From<i32> for SlotStatus {
 pub struct EndpointData {
     pub updates: Vec<SlotUpdate>,
     pub account_updates: Vec<AccountUpdate>,
+    pub transaction_updates: Vec<TransactionUpdate>,
     pub endpoint: String,
 }
 
@@ -64,6 +73,7 @@ impl EndpointData {
         Self {
             updates: Vec::with_capacity(update_capacity),
             account_updates: Vec::new(),
+            transaction_updates: Vec::new(),
             endpoint,
         }
     }

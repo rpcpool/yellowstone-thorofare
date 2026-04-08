@@ -31,11 +31,13 @@ pub struct Collector {
     slot_count: usize,
     with_accounts: bool,
     account_owner: Option<String>,
+    with_transactions: bool,
     endpoint1_richat: bool,
     endpoint2_richat: bool,
 }
 
 impl Collector {
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         config: Config,
         endpoint1: String,
@@ -47,6 +49,7 @@ impl Collector {
         slot_count: usize,
         with_accounts: bool,
         account_owner: Option<String>,
+        with_transactions: bool,
     ) -> Self {
         Self {
             config,
@@ -57,6 +60,7 @@ impl Collector {
             slot_count,
             with_accounts,
             account_owner,
+            with_transactions,
             endpoint1_richat,
             endpoint2_richat,
         }
@@ -75,6 +79,7 @@ impl Collector {
             self.config.benchmark.latency_samples,
             self.with_accounts,
             self.account_owner.clone(),
+            self.with_transactions,
             self.endpoint1_richat,
         )
         .await?;
@@ -86,6 +91,7 @@ impl Collector {
             self.config.benchmark.latency_samples,
             self.with_accounts,
             self.account_owner.clone(),
+            self.with_transactions,
             self.endpoint2_richat,
         )
         .await?;
@@ -113,14 +119,13 @@ impl Collector {
         let ping2 = collector2.avg_ping;
 
         // Start synchronized collection
-        info!(
-            "Starting synchronized collection{}",
-            if self.with_accounts {
-                " with account updates"
-            } else {
-                ""
-            }
-        );
+        let extras = match (self.with_accounts, self.with_transactions) {
+            (true, true) => " with account and transaction updates",
+            (true, false) => " with account updates",
+            (false, true) => " with transaction updates",
+            (false, false) => "",
+        };
+        info!("Starting synchronized collection{}", extras);
 
         let (data1, data2) = tokio::join!(
             Self::collect_with_barrier(collector1, Arc::clone(&barrier)),
@@ -140,6 +145,19 @@ impl Collector {
             info!(
                 "Collected {} account updates from {}",
                 data2.account_updates.len(),
+                data2.endpoint
+            );
+        }
+
+        if self.with_transactions {
+            info!(
+                "Collected {} transaction updates from {}",
+                data1.transaction_updates.len(),
+                data1.endpoint
+            );
+            info!(
+                "Collected {} transaction updates from {}",
+                data2.transaction_updates.len(),
                 data2.endpoint
             );
         }

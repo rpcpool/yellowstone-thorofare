@@ -2,7 +2,7 @@ use {
     crate::{
         EndpointData,
         richat::{RichatSubscriber, richat_client_from_config},
-        types::{AccountUpdate, SlotStatus, SlotUpdate},
+        types::{AccountUpdate, SlotStatus, SlotUpdate, TransactionUpdate},
     },
     futures::StreamExt,
     richat_proto::{
@@ -20,6 +20,7 @@ use {
     yellowstone_grpc_proto::{
         geyser::{
             SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterSlots,
+            SubscribeRequestFilterTransactions,
             subscribe_update::UpdateOneof as YellowstoneUpdateOneof,
         },
         tonic::transport::ClientTlsConfig,
@@ -68,6 +69,7 @@ pub struct GrpcClient {
     config: GrpcConfig,
     with_accounts: bool,
     account_owner: Option<String>,
+    with_transactions: bool,
 }
 
 impl GrpcClient {
@@ -75,6 +77,7 @@ impl GrpcClient {
         config: GrpcConfig,
         with_accounts: bool,
         account_owner: Option<String>,
+        with_transactions: bool,
     ) -> Result<Self> {
         if config.endpoint.is_empty() {
             return Err(GrpcError::InvalidConfig("Empty endpoint".into()));
@@ -84,6 +87,7 @@ impl GrpcClient {
             config,
             with_accounts,
             account_owner,
+            with_transactions,
         })
     }
 
@@ -184,6 +188,69 @@ impl GrpcClient {
         }
 
         Ok(())
+    }
+
+    pub async fn subscribe_transactions(
+        &self,
+        tx: mpsc::UnboundedSender<TransactionUpdate>,
+    ) -> Result<()> {
+        let mut client = self.connect().await?;
+
+        let request = SubscribeRequest {
+            transactions: [(
+                "".to_string(),
+                SubscribeRequestFilterTransactions {
+                    vote: Some(false),
+                    failed: None,
+                    signature: None,
+                    account_include: vec![],
+                    account_exclude: vec![],
+                    account_required: vec![],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            commitment: Some(0), // Processed
+            ..Default::default()
+        };
+
+        let mut stream = client
+            .subscribe_once(request)
+            .await
+            .map_err(|e| GrpcError::SubscriptionFailed(e.to_string()))?;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            let received_at = Instant::now();
+            let received_system_time = SystemTime::now();
+
+            if let Some(YellowstoneUpdateOneof::Transaction(tx_update)) = msg.update_oneof {
+                let Some(tx_info) = tx_update.transaction.as_ref() else {
+                    continue;
+                };
+                let Ok(signature) = Signature::try_from(tx_info.signature.as_slice()) else {
+                    continue;
+                };
+
+                let update = TransactionUpdate {
+                    slot: tx_update.slot,
+                    signature,
+                    instant: received_at,
+                    system_time: received_system_time,
+                };
+
+                tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe_transactions_richat(
+        &self,
+        _tx: mpsc::UnboundedSender<TransactionUpdate>,
+    ) -> Result<()> {
+        todo!("Richat transaction subscription not yet implemented")
     }
 
     pub async fn subscribe_slots_richat(
@@ -405,6 +472,7 @@ pub struct SlotCollector {
 impl SlotCollector {
     const UNKNOWN_VERSION: &str = "unknown";
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         config: GrpcConfig,
         target_slots: usize,
@@ -412,10 +480,11 @@ impl SlotCollector {
         latency_samples: usize,
         with_accounts: bool,
         account_owner: Option<String>,
+        with_transactions: bool,
         richat: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
-        let client = GrpcClient::new(config, with_accounts, account_owner)?;
+        let client = GrpcClient::new(config, with_accounts, account_owner, with_transactions)?;
 
         // Version is metadata only, so don't fail the whole benchmark if it isn't exposed.
         let version = if richat {
@@ -500,10 +569,12 @@ impl SlotCollector {
     pub async fn collect(mut self) -> Result<EndpointData> {
         let (slot_tx, mut slot_rx) = mpsc::unbounded_channel();
         let (account_tx, mut account_rx) = mpsc::unbounded_channel();
+        let (tx_tx, mut tx_rx) = mpsc::unbounded_channel();
 
         let endpoint = self.endpoint_data.endpoint.clone();
         let richat = self.richat;
         let with_accounts = self.client.with_accounts;
+        let with_transactions = self.client.with_transactions;
 
         // Spawn slot collector
         let slot_handle = {
@@ -537,9 +608,27 @@ impl SlotCollector {
             None
         };
 
+        // Spawn transaction collector if needed
+        let tx_handle = if with_transactions {
+            let client = self.client.clone();
+            let endpoint = endpoint.clone();
+            Some(tokio::spawn(async move {
+                if richat {
+                    if let Err(e) = client.subscribe_transactions_richat(tx_tx).await {
+                        error!("{} transaction subscription failed: {}", endpoint, e);
+                    }
+                } else if let Err(e) = client.subscribe_transactions(tx_tx).await {
+                    error!("{} transaction subscription failed: {}", endpoint, e);
+                }
+            }))
+        } else {
+            None
+        };
+
         let target_slot_count = (self.target_slots as f32 * (1.0 + self.buffer_percent)) as usize;
         let mut seen_slots = HashSet::with_capacity(target_slot_count);
         let mut seen_accounts = HashSet::new();
+        let mut seen_transactions = HashSet::new();
 
         let mut last_logged_percent = 0;
 
@@ -576,6 +665,11 @@ impl SlotCollector {
                         self.endpoint_data.account_updates.push(account);
                     }
                 }
+                Some(tx_update) = tx_rx.recv() => {
+                    if seen_transactions.insert(tx_update.signature) {
+                        self.endpoint_data.transaction_updates.push(tx_update);
+                    }
+                }
                 else => break,
             }
         }
@@ -584,13 +678,17 @@ impl SlotCollector {
         if let Some(handle) = account_handle {
             handle.abort();
         }
+        if let Some(handle) = tx_handle {
+            handle.abort();
+        }
 
         info!(
-            "{}: {} slot updates, {} unique slots, {} account updates",
+            "{}: {} slot updates, {} unique slots, {} account updates, {} transaction updates",
             self.endpoint_data.endpoint,
             self.endpoint_data.updates.len(),
             seen_slots.len(),
             self.endpoint_data.account_updates.len(),
+            self.endpoint_data.transaction_updates.len(),
         );
 
         Ok(self.endpoint_data)
