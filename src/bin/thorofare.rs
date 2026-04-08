@@ -273,6 +273,17 @@ async fn main() {
                     .map(|d| d.p99)
                     .unwrap_or(0.0)
             );
+            if result.endpoint1_summary.account_matched > 0 {
+                let pct = result.endpoint1_summary.account_faster as f64
+                    / result.endpoint1_summary.account_matched as f64
+                    * 100.0;
+                info!(
+                    "Account Wins: {}/{} ({:.1}%)",
+                    result.endpoint1_summary.account_faster,
+                    result.endpoint1_summary.account_matched,
+                    pct
+                );
+            }
 
             info!("\n=== ENDPOINT 2 PERFORMANCE (ms) ===");
             info!(
@@ -344,6 +355,17 @@ async fn main() {
                     .map(|d| d.p99)
                     .unwrap_or(0.0)
             );
+            if result.endpoint2_summary.account_matched > 0 {
+                let pct = result.endpoint2_summary.account_faster as f64
+                    / result.endpoint2_summary.account_matched as f64
+                    * 100.0;
+                info!(
+                    "Account Wins: {}/{} ({:.1}%)",
+                    result.endpoint2_summary.account_faster,
+                    result.endpoint2_summary.account_matched,
+                    pct
+                );
+            }
         }
         Err(e) => {
             error!("Benchmark failed: {}", e);

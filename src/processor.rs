@@ -64,6 +64,9 @@ pub struct EndpointSummary {
     pub confirmation_time: Percentiles,
     pub finalization_time: Percentiles,
     pub account_delay: Option<Percentiles>,
+    pub account_matched: u64,
+    pub account_faster: u64,
+    pub account_slower: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +119,7 @@ pub struct AccountUpdateDetail {
 
 type SlotKey = (u64, SlotStatus);
 type AccountKey = (u64, String, String); // (slot, pubkey, signature)
+type AccountMatchMap = HashMap<AccountKey, (Option<Instant>, Option<Instant>)>;
 
 pub struct EndpointMetadata {
     pub plugin_type: String,
@@ -175,16 +179,10 @@ impl Processor {
         let total_slots_collected = endpoint1_slots.len() as u64 + endpoint2_slots.len() as u64;
 
         // Find slots that exist in both endpoints
-        let common_slots: Vec<u64> = endpoint1_slots
+        let mut sorted_common_slots: Vec<u64> = endpoint1_slots
             .intersection(&endpoint2_slots)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .collect::<HashSet<_>>() // dedup
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        let mut sorted_common_slots = common_slots;
+            .copied()
+            .collect();
         sorted_common_slots.sort_unstable();
 
         let common_slots_count = sorted_common_slots.len() as u64;
@@ -225,6 +223,9 @@ impl Processor {
         // Account update delay collections
         let mut endpoint1_account_delays = Vec::new();
         let mut endpoint2_account_delays = Vec::new();
+        let mut account_matched: u64 = 0;
+        let mut endpoint1_faster: u64 = 0;
+        let mut endpoint2_faster: u64 = 0;
 
         for slot in sorted_common_slots {
             // Check if slot is dead in either endpoint
@@ -246,24 +247,6 @@ impl Processor {
             if !ep1_complete || !ep2_complete {
                 dropped_slots += 1;
                 continue;
-            }
-
-            // Check if we have the same number of account updates so our benchmark is fair
-            if with_accounts {
-                let received1 = accounts1_by_slot
-                    .get(&slot)
-                    .map(|v| v.len() as u64)
-                    .unwrap_or(0);
-                let received2 = accounts2_by_slot
-                    .get(&slot)
-                    .map(|v| v.len() as u64)
-                    .unwrap_or(0);
-
-                // Skip slots where we don't have the same number of account updates.
-                if received1 != received2 {
-                    dropped_slots += 1;
-                    continue;
-                }
             }
 
             // Calculate first shred delays
@@ -355,22 +338,27 @@ impl Processor {
                     2, // endpoint 2
                 );
 
-                // Collect account delays for percentile calculation
-                // Use microseconds directly to avoid precision loss from f64 conversions
+                // Collect account delays for percentile calculation.
+                // Wins (this endpoint was faster) are recorded as 0ms so they
+                // pull the distribution down. Combined with the Account Wins
+                // count this gives a complete picture: a p50 of 0.00 means the
+                // endpoint was faster more than half the time.
                 for update in &endpoint1_detail.account_updates {
                     if let Some(delay_ms) = update.delay_ms {
-                        if delay_ms > 0.0 {
-                            endpoint1_account_delays
-                                .push(Duration::from_micros((delay_ms * 1000.0) as u64));
+                        account_matched += 1;
+                        if delay_ms == 0.0 {
+                            endpoint1_faster += 1;
+                        } else {
+                            endpoint2_faster += 1;
                         }
+                        endpoint1_account_delays
+                            .push(Duration::from_micros((delay_ms * 1000.0) as u64));
                     }
                 }
                 for update in &endpoint2_detail.account_updates {
                     if let Some(delay_ms) = update.delay_ms {
-                        if delay_ms > 0.0 {
-                            endpoint2_account_delays
-                                .push(Duration::from_micros((delay_ms * 1000.0) as u64));
-                        }
+                        endpoint2_account_delays
+                            .push(Duration::from_micros((delay_ms * 1000.0) as u64));
                     }
                 }
             }
@@ -465,6 +453,9 @@ impl Processor {
                 } else {
                     None
                 },
+                account_matched,
+                account_faster: endpoint1_faster,
+                account_slower: endpoint2_faster,
             },
             endpoint2_summary: EndpointSummary {
                 first_shred_delay: Self::percentiles(endpoint2_first_shred_delays),
@@ -480,6 +471,9 @@ impl Processor {
                 } else {
                     None
                 },
+                account_matched,
+                account_faster: endpoint2_faster,
+                account_slower: endpoint1_faster,
             },
             slots: slot_comparisons,
         }
@@ -494,42 +488,36 @@ impl Processor {
         by_slot
     }
 
+    fn account_key(update: &AccountUpdate) -> AccountKey {
+        (
+            update.slot,
+            update.pubkey.to_string(),
+            update.tx_signature.to_string(),
+        )
+    }
+
     // Build map to match account updates between endpoints
     fn build_account_match_map(
         updates1: &[AccountUpdate],
         updates2: &[AccountUpdate],
-    ) -> HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)> {
+    ) -> AccountMatchMap {
         let mut map = HashMap::new();
 
-        // Group by (slot, pubkey, signature) and keep all write_versions
+        // Keep the first arrival for each logical account update and ignore later write_versions.
         for update in updates1 {
-            let key = (
-                update.slot,
-                update.pubkey.to_string(),
-                update.tx_signature.to_string(),
-            );
+            let key = Self::account_key(update);
             map.entry(key)
-                .or_insert((Vec::new(), Vec::new()))
+                .or_insert((None, None))
                 .0
-                .push((update.write_version, update.instant));
+                .get_or_insert(update.instant);
         }
 
         for update in updates2 {
-            let key = (
-                update.slot,
-                update.pubkey.to_string(),
-                update.tx_signature.to_string(),
-            );
+            let key = Self::account_key(update);
             map.entry(key)
-                .or_insert((Vec::new(), Vec::new()))
+                .or_insert((None, None))
                 .1
-                .push((update.write_version, update.instant));
-        }
-
-        // Sort each vec by write_version to match first-to-first, second-to-second
-        for (_, (vec1, vec2)) in map.iter_mut() {
-            vec1.sort_by_key(|(wv, _)| *wv);
-            vec2.sort_by_key(|(wv, _)| *wv);
+                .get_or_insert(update.instant);
         }
 
         map
@@ -538,21 +526,16 @@ impl Processor {
     // Build account details for JSON output
     fn build_account_details(
         updates: Option<&Vec<AccountUpdate>>,
-        match_map: &HashMap<AccountKey, (Vec<(u64, Instant)>, Vec<(u64, Instant)>)>,
+        match_map: &AccountMatchMap,
         endpoint_num: usize,
     ) -> Vec<AccountUpdateDetail> {
         let mut details = Vec::new();
         if let Some(updates) = updates {
             for update in updates {
-                let key = (
-                    update.slot,
-                    update.pubkey.to_string(),
-                    update.tx_signature.to_string(),
-                );
-                // Calculate delay if matched, using the highest write_version (last update)
-                let delay_ms = if let Some((vec1, vec2)) = match_map.get(&key) {
-                    match (vec1.last(), vec2.last()) {
-                        (Some((_, instant1)), Some((_, instant2))) => {
+                let key = Self::account_key(update);
+                let delay_ms = if let Some((instant1, instant2)) = match_map.get(&key) {
+                    match (instant1, instant2) {
+                        (Some(instant1), Some(instant2)) => {
                             if endpoint_num == 1 {
                                 if instant1 < instant2 {
                                     Some(0.0)
@@ -733,5 +716,71 @@ impl Processor {
             p90: values[(len - 1) * 90 / 100].as_micros() as f64 / 1000.0,
             p99: values[(len - 1) * 99 / 100].as_micros() as f64 / 1000.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_pubkey::Pubkey;
+    use solana_signature::Signature;
+
+    fn account_update(
+        slot: u64,
+        write_version: u64,
+        instant: Instant,
+        pubkey: Pubkey,
+        tx_signature: Signature,
+    ) -> AccountUpdate {
+        AccountUpdate {
+            slot,
+            pubkey,
+            write_version,
+            tx_signature,
+            instant,
+            system_time: UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn account_match_map_keeps_first_seen_per_endpoint() {
+        let pubkey = Pubkey::new_unique();
+        let tx_signature = Signature::from([7u8; 64]);
+        let first = Instant::now();
+        let second = first.checked_add(Duration::from_millis(2)).unwrap();
+        let third = first.checked_add(Duration::from_millis(4)).unwrap();
+        let fourth = first.checked_add(Duration::from_millis(6)).unwrap();
+
+        let updates1 = vec![
+            account_update(7, 1, first, pubkey, tx_signature),
+            account_update(7, 2, third, pubkey, tx_signature),
+        ];
+        let updates2 = vec![
+            account_update(7, 10, second, pubkey, tx_signature),
+            account_update(7, 11, fourth, pubkey, tx_signature),
+        ];
+
+        let match_map = Processor::build_account_match_map(&updates1, &updates2);
+        let key = Processor::account_key(&updates1[0]);
+
+        assert_eq!(match_map.get(&key), Some(&(Some(first), Some(second))));
+    }
+
+    #[test]
+    fn account_details_use_first_match_latency() {
+        let pubkey = Pubkey::new_unique();
+        let tx_signature = Signature::from([9u8; 64]);
+        let first = Instant::now();
+        let second = first.checked_add(Duration::from_millis(3)).unwrap();
+
+        let updates1 = vec![account_update(9, 1, first, pubkey, tx_signature)];
+        let updates2 = vec![account_update(9, 2, second, pubkey, tx_signature)];
+        let match_map = Processor::build_account_match_map(&updates1, &updates2);
+
+        let endpoint1 = Processor::build_account_details(Some(&updates1), &match_map, 1);
+        let endpoint2 = Processor::build_account_details(Some(&updates2), &match_map, 2);
+
+        assert_eq!(endpoint1[0].delay_ms, Some(0.0));
+        assert_eq!(endpoint2[0].delay_ms, Some(3.0));
     }
 }

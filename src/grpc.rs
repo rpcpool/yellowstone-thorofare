@@ -110,13 +110,15 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            let received_at = Instant::now();
+            let received_system_time = SystemTime::now();
 
             if let Some(YellowstoneUpdateOneof::Slot(slot)) = msg.update_oneof {
                 let update = SlotUpdate {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
-                    instant: Instant::now(),
-                    system_time: SystemTime::now(),
+                    instant: received_at,
+                    system_time: received_system_time,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -133,7 +135,8 @@ impl GrpcClient {
             accounts: [(
                 "".to_string(),
                 SubscribeRequestFilterAccounts {
-                    owner: vec![self.account_owner.clone().unwrap_or_default()],
+                    owner: self.account_owner.clone().into_iter().collect(),
+                    nonempty_txn_signature: Some(true),
                     ..Default::default()
                 },
             )]
@@ -150,35 +153,30 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            let received_at = Instant::now();
+            let received_system_time = SystemTime::now();
 
             if let Some(YellowstoneUpdateOneof::Account(account)) = msg.update_oneof {
-                let pubkey = Pubkey::try_from(
-                    account
-                        .account
-                        .as_ref()
-                        .map(|a| a.pubkey.as_slice())
-                        .unwrap_or_default(),
-                )
-                .unwrap_or_default();
-
-                let tx_signature = account
-                    .account
-                    .as_ref()
-                    .and_then(|a| a.txn_signature.as_ref())
-                    .and_then(|sig| Signature::try_from(sig.as_slice()).ok())
-                    .unwrap_or_default();
+                let Some(account_info) = account.account.as_ref() else {
+                    continue;
+                };
+                let Ok(pubkey) = Pubkey::try_from(account_info.pubkey.as_slice()) else {
+                    continue;
+                };
+                let Some(txn_signature_bytes) = account_info.txn_signature.as_ref() else {
+                    continue;
+                };
+                let Ok(tx_signature) = Signature::try_from(txn_signature_bytes.as_slice()) else {
+                    continue;
+                };
 
                 let update = AccountUpdate {
                     slot: account.slot,
                     pubkey,
-                    write_version: account
-                        .account
-                        .as_ref()
-                        .map(|a| a.write_version)
-                        .unwrap_or(0),
+                    write_version: account_info.write_version,
                     tx_signature,
-                    instant: Instant::now(),
-                    system_time: SystemTime::now(),
+                    instant: received_at,
+                    system_time: received_system_time,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -206,13 +204,15 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            let received_at = Instant::now();
+            let received_system_time = SystemTime::now();
 
             if let Some(RichatUpdateOneof::Slot(slot)) = msg.update_oneof {
                 let update = SlotUpdate {
                     slot: slot.slot,
                     status: SlotStatus::from(slot.status),
-                    instant: Instant::now(),
-                    system_time: SystemTime::now(),
+                    instant: received_at,
+                    system_time: received_system_time,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -241,35 +241,30 @@ impl GrpcClient {
 
         while let Some(msg) = stream.next().await {
             let msg = msg.map_err(|e| GrpcError::StreamError(e.to_string()))?;
+            let received_at = Instant::now();
+            let received_system_time = SystemTime::now();
 
             if let Some(RichatUpdateOneof::Account(account)) = msg.update_oneof {
-                let pubkey = Pubkey::try_from(
-                    account
-                        .account
-                        .as_ref()
-                        .map(|a| a.pubkey.as_slice())
-                        .unwrap_or_default(),
-                )
-                .unwrap_or_default();
-
-                let tx_signature = account
-                    .account
-                    .as_ref()
-                    .and_then(|a| a.txn_signature.as_ref())
-                    .and_then(|sig| Signature::try_from(sig.as_slice()).ok())
-                    .unwrap_or_default();
+                let Some(account_info) = account.account.as_ref() else {
+                    continue;
+                };
+                let Ok(pubkey) = Pubkey::try_from(account_info.pubkey.as_slice()) else {
+                    continue;
+                };
+                let Some(txn_signature_bytes) = account_info.txn_signature.as_ref() else {
+                    continue;
+                };
+                let Ok(tx_signature) = Signature::try_from(txn_signature_bytes.as_slice()) else {
+                    continue;
+                };
 
                 let update = AccountUpdate {
                     slot: account.slot,
                     pubkey,
-                    write_version: account
-                        .account
-                        .as_ref()
-                        .map(|a| a.write_version)
-                        .unwrap_or(0),
+                    write_version: account_info.write_version,
                     tx_signature,
-                    instant: Instant::now(),
-                    system_time: SystemTime::now(),
+                    instant: received_at,
+                    system_time: received_system_time,
                 };
 
                 tx.send(update).map_err(|_| GrpcError::ChannelClosed)?;
@@ -544,6 +539,7 @@ impl SlotCollector {
 
         let target_slot_count = (self.target_slots as f32 * (1.0 + self.buffer_percent)) as usize;
         let mut seen_slots = HashSet::with_capacity(target_slot_count);
+        let mut seen_accounts = HashSet::new();
 
         let mut last_logged_percent = 0;
 
@@ -571,7 +567,14 @@ impl SlotCollector {
                     }
                 }
                 Some(account) = account_rx.recv() => {
-                    self.endpoint_data.account_updates.push(account);
+                    let key = (
+                        account.slot,
+                        account.pubkey,
+                        account.tx_signature,
+                    );
+                    if seen_accounts.insert(key) {
+                        self.endpoint_data.account_updates.push(account);
+                    }
                 }
                 else => break,
             }
