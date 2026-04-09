@@ -13,6 +13,7 @@ cargo build --release
 - Download time (FirstShredReceived > Completed)
 - Replay time (CreatedBank > Processed)
 - Account update propagation delays (optional)
+- Transaction propagation delays (optional)
 
 ## Basic usage
 ```bash
@@ -30,9 +31,13 @@ Optional:
 - `--x-token2` - Auth token for endpoint2
 - `--slots` - Number of slots to collect (default: 1000)
 - `--with-accounts` - Track account updates
-- `--account-owner` - Filter by program ID (requires --with-accounts) (default: Raydium AMM V4)
+- `--account-owner` - Filter by program ID (requires --with-accounts)
+- `--with-transactions` - Track transaction updates (non-vote)
+- `--endpoint1-richat` - Use Richat interface for endpoint1
+- `--endpoint2-richat` - Use Richat interface for endpoint2
 - `--config` - Config file (default: config.toml)
 - `--output` - Output file (default: benchmark_results.json)
+- `--log-level` - Log level (default: info)
 
 ## Examples
 
@@ -45,7 +50,7 @@ thorofare \
   --x-token2 YOUR_TOKEN_2
 ```
 
-Track Raydium account updates:
+Track account updates by program owner:
 ```bash
 thorofare \
   --endpoint1 endpoint1.com:10000 \
@@ -54,13 +59,34 @@ thorofare \
   --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
 ```
 
+Track transaction propagation:
+```bash
+thorofare \
+  --endpoint1 endpoint1.com:10000 \
+  --endpoint2 endpoint2.com:10000 \
+  --with-transactions
+```
+
+Full benchmark (slots + accounts + transactions):
+```bash
+thorofare \
+  --endpoint1 endpoint1.com:10000 \
+  --endpoint2 endpoint2.com:10000 \
+  --with-accounts \
+  --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 \
+  --with-transactions
+```
+
 ## Output
 
 Generates JSON with:
 - Slot timing comparisons
-- P50/P90/P99 percentiles
-- Account update delays (if enabled)
+- P50/P90/P99 percentiles for all metrics
+- Account update delays with win/loss counts (if `--with-accounts`)
+- Transaction propagation delays with win/loss counts (if `--with-transactions`)
 - Ping latencies
+
+Delay metrics use 0ms for wins (this endpoint was faster) so the percentiles reflect the full population. A p50 of 0.00 means that endpoint was faster more than half the time.
 
 You can visualize here https://thorofare.triton.one/
 
