@@ -17,14 +17,14 @@ cargo build --release
 
 ## Basic usage
 ```bash
-thorofare --endpoint1 endpoint1.com:10000 --endpoint2 endpoint2.com:10000
+thorofare --endpoint1 https://endpoint1.com:10000 --endpoint2 https://endpoint2.com:10000
 ```
 
 ## Arguments
 
 Required:
-- `--endpoint1` - First endpoint (host:port)
-- `--endpoint2` - Second endpoint (host:port)
+- `--endpoint1` - First endpoint, full URL including scheme (e.g. `https://endpoint1.com:10000`); a bare `host:port` fails with a gRPC transport error
+- `--endpoint2` - Second endpoint, same format as `--endpoint1`
 
 Optional:
 - `--x-token1` - Auth token for endpoint1
@@ -44,8 +44,8 @@ Optional:
 With auth tokens:
 ```bash
 thorofare \
-  --endpoint1 endpoint1.com:10000 \
-  --endpoint2 endpoint2.com:10000 \
+  --endpoint1 https://endpoint1.com:10000 \
+  --endpoint2 https://endpoint2.com:10000 \
   --x-token1 YOUR_TOKEN_1 \
   --x-token2 YOUR_TOKEN_2
 ```
@@ -53,8 +53,8 @@ thorofare \
 Track account updates by program owner:
 ```bash
 thorofare \
-  --endpoint1 endpoint1.com:10000 \
-  --endpoint2 endpoint2.com:10000 \
+  --endpoint1 https://endpoint1.com:10000 \
+  --endpoint2 https://endpoint2.com:10000 \
   --with-accounts \
   --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
 ```
@@ -62,16 +62,16 @@ thorofare \
 Track transaction propagation:
 ```bash
 thorofare \
-  --endpoint1 endpoint1.com:10000 \
-  --endpoint2 endpoint2.com:10000 \
+  --endpoint1 https://endpoint1.com:10000 \
+  --endpoint2 https://endpoint2.com:10000 \
   --with-transactions
 ```
 
 Full benchmark (slots + accounts + transactions):
 ```bash
 thorofare \
-  --endpoint1 endpoint1.com:10000 \
-  --endpoint2 endpoint2.com:10000 \
+  --endpoint1 https://endpoint1.com:10000 \
+  --endpoint2 https://endpoint2.com:10000 \
   --with-accounts \
   --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 \
   --with-transactions
