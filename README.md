@@ -33,6 +33,8 @@ Optional:
 - `--with-accounts` - Track account updates
 - `--account-owner` - Filter by program ID (requires --with-accounts)
 - `--with-transactions` - Track transaction updates (non-vote)
+- `--transaction-account` - Only race transactions that touch this account; repeat for more (requires --with-transactions). Without it every non-vote transaction is streamed.
+- `--core-slot-statuses` - Compare slots on CreatedBank, Processed, Confirmed and Finalized only. Use it for servers that never send FirstShredReceived or Completed, such as Firedancer Dragon's Mouth. Without it such slots are all dropped. First-shred delay and download time are then compared only where both endpoints sent both statuses, and `download_ms` is 0 for a slot without them.
 - `--endpoint1-richat` - Use Richat interface for endpoint1
 - `--endpoint2-richat` - Use Richat interface for endpoint2
 - `--config` - Config file (default: config.toml)
@@ -57,6 +59,18 @@ thorofare \
   --endpoint2 https://endpoint2.com:10000 \
   --with-accounts \
   --account-owner 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
+```
+
+Firedancer Dragon's Mouth against Agave Yellowstone, plaintext (set `use_tls = false` in the config):
+```bash
+thorofare \
+  --endpoint1 http://firedancer-host:10000 \
+  --endpoint2 http://agave-host:10000 \
+  --core-slot-statuses \
+  --with-accounts \
+  --account-owner 11111111111111111111111111111111 \
+  --with-transactions \
+  --transaction-account 11111111111111111111111111111111
 ```
 
 Track transaction propagation:

@@ -10,10 +10,12 @@ use {
 
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResult {
-    pub version: String,                // Yellowstone Thorofare version
-    pub with_accounts: bool,            // Whether --with-accounts was used
-    pub account_owner: Option<String>,  // The account owner pubkey filter (if specified)
-    pub with_transactions: bool,        // Whether --with-transactions was used
+    pub version: String,                   // Yellowstone Thorofare version
+    pub with_accounts: bool,               // Whether --with-accounts was used
+    pub account_owner: Option<String>,     // The account owner pubkey filter (if specified)
+    pub with_transactions: bool,           // Whether --with-transactions was used
+    pub transaction_accounts: Vec<String>, // --transaction-account filter, empty = every non-vote txn
+    pub core_slot_statuses: bool, // --core-slot-statuses: FirstShredReceived/Completed not required
     pub grpc_config: GrpcConfigSummary, // gRPC config settings
     pub metadata: Metadata,
     pub endpoints: [EndpointInfo; 2],
@@ -147,6 +149,22 @@ pub struct EndpointMetadata {
 
 pub struct Processor;
 
+const ALL_SLOT_STATUSES: [SlotStatus; 6] = [
+    SlotStatus::FirstShredReceived,
+    SlotStatus::Completed,
+    SlotStatus::CreatedBank,
+    SlotStatus::Processed,
+    SlotStatus::Confirmed,
+    SlotStatus::Finalized,
+];
+
+const CORE_SLOT_STATUSES: [SlotStatus; 4] = [
+    SlotStatus::CreatedBank,
+    SlotStatus::Processed,
+    SlotStatus::Confirmed,
+    SlotStatus::Finalized,
+];
+
 impl Processor {
     #[allow(clippy::too_many_arguments)]
     pub fn process(
@@ -154,6 +172,8 @@ impl Processor {
         with_accounts: bool,
         account_owner: Option<String>,
         with_transactions: bool,
+        transaction_accounts: Vec<String>,
+        core_slot_statuses: bool,
         grpc_config: GrpcConfigSummary,
         data1: EndpointData,
         data2: EndpointData,
@@ -225,15 +245,13 @@ impl Processor {
 
         let common_slots_count = sorted_common_slots.len() as u64;
 
-        // Required statuses for a complete slot
-        let required_statuses = [
-            SlotStatus::FirstShredReceived,
-            SlotStatus::Completed,
-            SlotStatus::CreatedBank,
-            SlotStatus::Processed,
-            SlotStatus::Confirmed,
-            SlotStatus::Finalized,
-        ];
+        // Required statuses for a complete slot. Core mode drops the two interslot statuses that
+        // some servers (Firedancer Dragon's Mouth) never send; they are still compared when present.
+        let required_statuses: &[SlotStatus] = if core_slot_statuses {
+            &CORE_SLOT_STATUSES
+        } else {
+            &ALL_SLOT_STATUSES
+        };
 
         // Process slots
         let mut slot_comparisons = Vec::new();
@@ -439,11 +457,14 @@ impl Processor {
                 }
             }
 
-            // Collect metrics
-            let d1 = Self::calc_download(&map1, slot).unwrap();
-            let d2 = Self::calc_download(&map2, slot).unwrap();
-            endpoint1_download_times.push(d1);
-            endpoint2_download_times.push(d2);
+            // Collect metrics. Download time needs FirstShredReceived and Completed on both sides.
+            if let (Some(d1), Some(d2)) = (
+                Self::calc_download(&map1, slot),
+                Self::calc_download(&map2, slot),
+            ) {
+                endpoint1_download_times.push(d1);
+                endpoint2_download_times.push(d2);
+            }
 
             let r1 = Self::calc_replay(&map1, slot).unwrap();
             let r2 = Self::calc_replay(&map2, slot).unwrap();
@@ -474,6 +495,8 @@ impl Processor {
             with_accounts,
             account_owner,
             with_transactions,
+            transaction_accounts,
+            core_slot_statuses,
             grpc_config,
             metadata: Metadata {
                 total_slots_collected,
@@ -831,8 +854,10 @@ impl Processor {
             }
         }
 
+        // 0 when the server sent no FirstShredReceived or Completed (core mode only).
         let durations = StageDurations {
-            download_ms: Self::calc_download(map, slot).unwrap().as_micros() as f64 / 1000.0,
+            download_ms: Self::calc_download(map, slot)
+                .map_or(0.0, |d| d.as_micros() as f64 / 1000.0),
             replay_ms: Self::calc_replay(map, slot).unwrap().as_micros() as f64 / 1000.0,
             confirmation_ms: Self::calc_confirmation(map, slot).unwrap().as_micros() as f64
                 / 1000.0,
@@ -928,6 +953,66 @@ mod tests {
             instant,
             system_time: UNIX_EPOCH,
         }
+    }
+
+    fn slot_data(endpoint: &str, statuses: &[SlotStatus], start: Instant) -> EndpointData {
+        let mut data = EndpointData::new(endpoint.to_owned(), 1, 0.0);
+        for (step, status) in statuses.iter().enumerate() {
+            data.updates.push(SlotUpdate {
+                slot: 42,
+                status: *status,
+                instant: start + Duration::from_millis(step as u64),
+                system_time: UNIX_EPOCH,
+            });
+        }
+        data
+    }
+
+    fn process_slots(data2: EndpointData, core_slot_statuses: bool) -> BenchmarkResult {
+        let start = Instant::now();
+        let meta = || EndpointMetadata {
+            plugin_type: "Yellowstone".to_owned(),
+            plugin_version: "test".to_owned(),
+        };
+        Processor::process(
+            "test".to_owned(),
+            false,
+            None,
+            false,
+            Vec::new(),
+            core_slot_statuses,
+            GrpcConfigSummary {
+                connect_timeout_ms: 0,
+                request_timeout_ms: 0,
+                max_message_size: 0,
+                use_tls: false,
+                http2_adaptive_window: false,
+                initial_connection_window_size: None,
+                initial_stream_window_size: None,
+            },
+            slot_data("a", &ALL_SLOT_STATUSES, start),
+            data2,
+            meta(),
+            meta(),
+            Duration::ZERO,
+            Duration::ZERO,
+            start,
+        )
+    }
+
+    #[test]
+    fn core_slot_statuses_compares_slots_without_interslot_statuses() {
+        let partial = || slot_data("b", &CORE_SLOT_STATUSES, Instant::now());
+
+        let strict = process_slots(partial(), false);
+        assert_eq!(strict.metadata.compared_slots, 0);
+        assert_eq!(strict.metadata.dropped_slots, 1);
+
+        let core = process_slots(partial(), true);
+        assert_eq!(core.metadata.compared_slots, 1);
+        assert_eq!(core.slots[0].endpoint2.durations.download_ms, 0.0);
+        assert!(core.slots[0].endpoint1.first_shred_delay_ms.is_none());
+        assert!(core.slots[0].endpoint1.processing_delay_ms.is_some());
     }
 
     #[test]

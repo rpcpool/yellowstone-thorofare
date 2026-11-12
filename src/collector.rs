@@ -32,6 +32,7 @@ pub struct Collector {
     with_accounts: bool,
     account_owner: Option<String>,
     with_transactions: bool,
+    transaction_accounts: Vec<String>,
     endpoint1_richat: bool,
     endpoint2_richat: bool,
 }
@@ -50,6 +51,7 @@ impl Collector {
         with_accounts: bool,
         account_owner: Option<String>,
         with_transactions: bool,
+        transaction_accounts: Vec<String>,
     ) -> Self {
         Self {
             config,
@@ -61,6 +63,7 @@ impl Collector {
             with_accounts,
             account_owner,
             with_transactions,
+            transaction_accounts,
             endpoint1_richat,
             endpoint2_richat,
         }
@@ -80,6 +83,7 @@ impl Collector {
             self.with_accounts,
             self.account_owner.clone(),
             self.with_transactions,
+            self.transaction_accounts.clone(),
             self.endpoint1_richat,
         )
         .await?;
@@ -92,6 +96,7 @@ impl Collector {
             self.with_accounts,
             self.account_owner.clone(),
             self.with_transactions,
+            self.transaction_accounts.clone(),
             self.endpoint2_richat,
         )
         .await?;
