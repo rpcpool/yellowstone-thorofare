@@ -70,6 +70,7 @@ pub struct GrpcClient {
     with_accounts: bool,
     account_owner: Option<String>,
     with_transactions: bool,
+    transaction_accounts: Vec<String>,
 }
 
 impl GrpcClient {
@@ -78,6 +79,7 @@ impl GrpcClient {
         with_accounts: bool,
         account_owner: Option<String>,
         with_transactions: bool,
+        transaction_accounts: Vec<String>,
     ) -> Result<Self> {
         if config.endpoint.is_empty() {
             return Err(GrpcError::InvalidConfig("Empty endpoint".into()));
@@ -88,6 +90,7 @@ impl GrpcClient {
             with_accounts,
             account_owner,
             with_transactions,
+            transaction_accounts,
         })
     }
 
@@ -203,7 +206,7 @@ impl GrpcClient {
                     vote: Some(false),
                     failed: None,
                     signature: None,
-                    account_include: vec![],
+                    account_include: self.transaction_accounts.clone(),
                     account_exclude: vec![],
                     account_required: vec![],
                 },
@@ -481,10 +484,17 @@ impl SlotCollector {
         with_accounts: bool,
         account_owner: Option<String>,
         with_transactions: bool,
+        transaction_accounts: Vec<String>,
         richat: bool,
     ) -> Result<Self> {
         let endpoint = config.endpoint.clone();
-        let client = GrpcClient::new(config, with_accounts, account_owner, with_transactions)?;
+        let client = GrpcClient::new(
+            config,
+            with_accounts,
+            account_owner,
+            with_transactions,
+            transaction_accounts,
+        )?;
 
         // Version is metadata only, so don't fail the whole benchmark if it isn't exposed.
         let version = if richat {

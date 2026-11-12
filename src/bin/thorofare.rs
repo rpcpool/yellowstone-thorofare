@@ -62,6 +62,15 @@ struct Args {
     /// Collect all transaction updates for comparison
     #[clap(long)]
     with_transactions: bool,
+
+    /// Only race transactions that touch this account (repeatable, requires --with-transactions)
+    #[clap(long = "transaction-account")]
+    transaction_accounts: Vec<String>,
+
+    /// Compare slots on CreatedBank, Processed, Confirmed and Finalized only, for servers that
+    /// never send FirstShredReceived or Completed (Firedancer Dragon's Mouth)
+    #[clap(long)]
+    core_slot_statuses: bool,
 }
 
 #[tokio::main]
@@ -111,6 +120,21 @@ async fn main() {
         }
         info!("Account Owner Filter: {}", owner);
     }
+    if !args.transaction_accounts.is_empty() && !args.with_transactions {
+        panic!("--transaction-account requires --with-transactions");
+    }
+    for account in &args.transaction_accounts {
+        if Pubkey::from_str(account).is_err() {
+            panic!("Invalid transaction account pubkey: {}", account);
+        }
+    }
+    if !args.transaction_accounts.is_empty() {
+        info!(
+            "Transaction Account Filter: {:?}",
+            args.transaction_accounts
+        );
+    }
+    info!("Core slot statuses only: {}", args.core_slot_statuses);
     info!(
         "Endpoint 1: {} ({})",
         args.endpoint1,
@@ -146,6 +170,7 @@ async fn main() {
         args.with_accounts,
         args.account_owner.clone(),
         args.with_transactions,
+        args.transaction_accounts.clone(),
     );
 
     info!("Starting data collection...");
@@ -161,6 +186,8 @@ async fn main() {
                 args.with_accounts,
                 args.account_owner,
                 args.with_transactions,
+                args.transaction_accounts.clone(),
+                args.core_slot_statuses,
                 grpc_config_summary,
                 data1,
                 data2,
